@@ -917,6 +917,13 @@ def metric_card(title: str, value: object, help_text: str) -> None:
     )
 
 
+def render_status_box(css_class: str, message: str) -> None:
+    st.markdown(
+        f'<div class="{css_class}">{message}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def horizontal_bar(
     df: pd.DataFrame,
     category_col: str,
@@ -1393,16 +1400,534 @@ st.markdown(
 )
 
 if is_particular_mode and critical_stock_pieces > 0:
-    st.markdown(
-        f"""
-        <div class="status-alert">
-            Hay {critical_stock_pieces} piezas sin stock en situacion critica. Si superan 55 dias conviene cambiar de proveedor u otra solucion.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_status_box(
+        "status-alert",
+        f"Hay {critical_stock_pieces} piezas sin stock en situacion critica. Si superan 55 dias conviene cambiar de proveedor u otra solucion.",
     )
 elif is_particular_mode and garantia_revisar > 0:
+    render_status_box(
+        "status-mid",
+        f"Hay {garantia_revisar} vehiculos con garantia a revisar por kilometraje o fecha de venta.",
+    )
+elif (not is_particular_mode) and critical_vehicles > 0:
+    render_status_box(
+        "status-alert",
+        f"Hay {critical_vehicles} vehiculos en situacion critica (71 dias o mas). Conviene revisarlos primero.",
+    )
+elif (is_particular_mode and pieces_no_stock > 0) or ((not is_particular_mode) and vehicles_waiting_parts > 0):
+    render_status_box(
+        "status-mid",
+        (
+            f"Hay {pieces_no_stock} piezas sin stock y conviene revisar la pestana de demoras para priorizar."
+            if is_particular_mode
+            else f"Hay {vehicles_waiting_parts} vehiculos esperando repuestos y conviene revisar la pestana de demoras para priorizar."
+        ),
+    )
+else:
+    render_status_box("status-good", "No se detectan alertas relevantes con los filtros actuales.")
+
+piece_result_df = pieces_result_summary(filtered_df)
+provider_df = provider_summary(filtered_df)
+status_df = status_summary(filtered_vehicle_summary)
+semaforo_df = semaforo_summary(filtered_vehicle_summary)
+brand_df, brand_label = brand_or_model_summary(filtered_vehicle_summary)
+delay_top_df = top_vehicles_by_delay(filtered_vehicle_summary).head(15)
+
+tabs = st.tabs(
+    [
+        "Resumen garantia" if is_particular_mode else "Resumen ejecutivo",
+        "Garantias" if is_particular_mode else "Piezas ganadas / perdidas",
+        "Stock y motivos" if is_particular_mode else "Demoras en taller",
+        "Detalle vehiculos",
+        "Detalle repuestos",
+    ]
+)
+
+with tabs[0]:
+    metric_cols_top = st.columns(4)
+    with metric_cols_top[0]:
+        metric_card("Vehiculos analizados", total_vehicles, "Vehiculos incluidos despues de aplicar filtros.")
+    with metric_cols_top[1]:
+        metric_card(
+            "Garantias vigentes" if is_particular_mode else "Vehiculos en taller",
+            garantia_vigente if is_particular_mode else vehicles_in_shop,
+            "Vehiculos garantia dentro de 100 mil km y hasta 3 anos desde la venta."
+            if is_particular_mode
+            else "Vehiculos cuyo estado actual figura como EN TALLER.",
+        )
+    with metric_cols_top[2]:
+        metric_card(
+            "Sin garantia" if is_particular_mode else "Esperando repuestos",
+            garantia_no_aplica if is_particular_mode else vehicles_waiting_parts,
+            "Vehiculos que exceden kilometraje o antiguedad permitida."
+            if is_particular_mode
+            else "Vehiculos frenados por repuestos sin entregar.",
+        )
+    with metric_cols_top[3]:
+        metric_card(
+            "Revisar datos" if is_particular_mode else "Dias promedio en taller",
+            garantia_revisar if is_particular_mode else f"{avg_days:.0f}",
+            "Falta kilometraje o fecha de venta para confirmar garantia."
+            if is_particular_mode
+            else "Usa DIAS EN TALLER o lo estima desde FECHA si esta vacio.",
+        )
+
+    metric_cols_bottom = st.columns(4)
+    with metric_cols_bottom[0]:
+        metric_card(
+            "Piezas sin stock" if is_particular_mode else "Piezas ganadas MAGNA",
+            pieces_no_stock if is_particular_mode else won_pieces,
+            "Piezas donde el motivo indica NO HAY STOCK."
+            if is_particular_mode
+            else "Piezas con proveedor adjudicado igual a MAGNA.",
+        )
+    with metric_cols_bottom[1]:
+        metric_card(
+            "Muy caro y hay stock" if is_particular_mode else "Piezas perdidas",
+            pieces_expensive_stock if is_particular_mode else lost_pieces,
+            "Cliente no cambia la pieza por precio teniendo stock."
+            if is_particular_mode
+            else "Piezas adjudicadas a otros proveedores.",
+        )
+    with metric_cols_bottom[2]:
+        metric_card(
+            "Espera critica" if is_particular_mode else "Piezas sin proveedor",
+            critical_stock_pieces if is_particular_mode else pending_pieces,
+            "Piezas sin stock con espera superior a 55 dias."
+            if is_particular_mode
+            else "Filas donde la columna Proveedor esta vacia.",
+        )
+    with metric_cols_bottom[3]:
+        metric_card(
+            "Espera promedio" if is_particular_mode else "% efectividad",
+            f"{avg_stock_wait:.0f}" if is_particular_mode else f"{effectiveness:.1f}%",
+            "Promedio de dias de espera en piezas sin stock."
+            if is_particular_mode
+            else "Ganadas sobre ganadas + perdidas.",
+        )
+
+    chart_col_1, chart_col_2 = st.columns(2)
+    with chart_col_1:
+        horizontal_bar(
+            warranty_df if is_particular_mode else piece_result_df,
+            "GARANTIA ESTADO" if is_particular_mode else "RESULTADO",
+            "VEHICULOS" if is_particular_mode else "PIEZAS",
+            "Estado de garantia" if is_particular_mode else "Resultado de piezas",
+            "#0f766e",
+        )
+    with chart_col_2:
+        horizontal_bar(
+            motivo_df if is_particular_mode else status_df,
+            "MOTIVO" if is_particular_mode else "STATUS DEL VEHICULO",
+            "PIEZAS" if is_particular_mode else "VEHICULOS",
+            "Motivos del cliente" if is_particular_mode else "Vehiculos por estado",
+            "#1d4ed8",
+        )
+
+    chart_col_3, chart_col_4 = st.columns(2)
+    with chart_col_3:
+        horizontal_bar(
+            stock_wait_df if is_particular_mode else semaforo_df,
+            "SEMAFORO STOCK" if is_particular_mode else "SEMAFORO",
+            "PIEZAS" if is_particular_mode else "VEHICULOS",
+            "Espera por no stock" if is_particular_mode else "Semaforo de demora",
+            "#b45309",
+        )
+    with chart_col_4:
+        horizontal_bar(brand_df, "CATEGORIA", "VEHICULOS", f"Vehiculos por {brand_label.lower()}", "#0f172a")
+
+with tabs[1]:
     st.markdown(
-        f"""
-        <div class="status-mid">
-            Hay {garantia_revisar} vehiculos con garantia a revisar por 
+        '<div class="tab-note">En esta pestana se resume la garantia por kilometraje y fecha de venta.</div>'
+        if is_particular_mode
+        else '<div class="tab-note">En esta pestana se ve el resultado comercial por pieza: ganada por MAGNA, perdida o sin proveedor asignado.</div>',
+        unsafe_allow_html=True,
+    )
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card(
+            "Garantia vigente" if is_particular_mode else "Piezas analizadas",
+            garantia_vigente if is_particular_mode else total_pieces,
+            "Vehiculos aptos para garantia." if is_particular_mode else "Total de repuestos dentro de los filtros actuales.",
+        )
+    with metric_cols[1]:
+        metric_card(
+            "Fuera por km" if is_particular_mode else "Ganadas MAGNA",
+            garantia_km_out if is_particular_mode else won_pieces,
+            "Vehiculos que superan 100.000 km." if is_particular_mode else "Piezas adjudicadas a MAGNA.",
+        )
+    with metric_cols[2]:
+        metric_card(
+            "Fuera por venta" if is_particular_mode else "Perdidas",
+            garantia_age_out if is_particular_mode else lost_pieces,
+            "Vehiculos con venta mayor a 3 anos." if is_particular_mode else "Piezas adjudicadas a otros proveedores.",
+        )
+    with metric_cols[3]:
+        metric_card(
+            "Revisar datos" if is_particular_mode else "Sin proveedor",
+            garantia_revisar if is_particular_mode else pending_pieces,
+            "Faltan datos para decidir garantia." if is_particular_mode else "Piezas con la columna Proveedor vacia.",
+        )
+
+    chart_col_1, chart_col_2 = st.columns(2)
+    with chart_col_1:
+        horizontal_bar(
+            warranty_df if is_particular_mode else piece_result_df,
+            "GARANTIA ESTADO" if is_particular_mode else "RESULTADO",
+            "VEHICULOS" if is_particular_mode else "PIEZAS",
+            "Resumen de garantia" if is_particular_mode else "Piezas ganadas, perdidas y sin proveedor",
+            "#0f766e",
+        )
+    with chart_col_2:
+        horizontal_bar(
+            status_df if is_particular_mode else provider_df.head(10),
+            "STATUS DEL VEHICULO" if is_particular_mode else "PROVEEDOR",
+            "VEHICULOS" if is_particular_mode else "PIEZAS",
+            "Vehiculos por estado" if is_particular_mode else "Top proveedores por piezas",
+            "#2563eb",
+        )
+
+with tabs[2]:
+    st.markdown(
+        '<div class="tab-note">Para piezas sin stock: 0 a 40 dias dentro del plazo, 41 a 55 llamada de atencion, mas de 55 dias situacion critica.</div>'
+        if is_particular_mode
+        else '<div class="tab-note">La demora se clasifica asi: 0 a 30 normal, 31 a 45 atencion, 46 a 70 demora alta, 71 o mas critica.</div>',
+        unsafe_allow_html=True,
+    )
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card(
+            "Sin stock" if is_particular_mode else "Normal",
+            pieces_no_stock if is_particular_mode else int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("NORMAL").sum()),
+            "Piezas cuya espera depende de reposicion." if is_particular_mode else "0 a 30 dias.",
+        )
+    with metric_cols[1]:
+        metric_card(
+            "Muy caro y hay stock" if is_particular_mode else "Atencion",
+            pieces_expensive_stock if is_particular_mode else int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("ATENCION").sum()),
+            "Cliente no cambia la pieza por precio." if is_particular_mode else "31 a 45 dias.",
+        )
+    with metric_cols[2]:
+        metric_card(
+            "Critica >55 dias" if is_particular_mode else "Demora alta",
+            critical_stock_pieces if is_particular_mode else int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("DEMORA ALTA").sum()),
+            "Conviene cambiar de proveedor u otra solucion." if is_particular_mode else "46 a 70 dias.",
+        )
+    with metric_cols[3]:
+        metric_card(
+            "Dias promedio espera" if is_particular_mode else "Critica",
+            f"{avg_stock_wait:.0f}" if is_particular_mode else critical_vehicles,
+            "Promedio solo en piezas sin stock." if is_particular_mode else "71 dias o mas.",
+        )
+
+    chart_col_1, chart_col_2 = st.columns(2)
+    with chart_col_1:
+        horizontal_bar(
+            motivo_df if is_particular_mode else semaforo_df,
+            "MOTIVO" if is_particular_mode else "SEMAFORO",
+            "PIEZAS" if is_particular_mode else "VEHICULOS",
+            "Motivos detectados" if is_particular_mode else "Vehiculos por semaforo",
+            "#dc2626",
+        )
+    with chart_col_2:
+        if is_particular_mode:
+            horizontal_bar(stock_wait_df, "SEMAFORO STOCK", "PIEZAS", "Semaforo de espera por no stock", "#ea580c")
+        else:
+            waiting_df = filtered_vehicle_summary[filtered_vehicle_summary["ESPERANDO REPUESTOS"]].copy()
+            waiting_semaforo_df = semaforo_summary(waiting_df)
+            horizontal_bar(waiting_semaforo_df, "SEMAFORO", "VEHICULOS", "Esperando repuestos por semaforo", "#ea580c")
+
+    st.subheader("Piezas con mayor espera por falta de stock" if is_particular_mode else "Vehiculos mas demorados")
+    if is_particular_mode:
+        st.dataframe(no_stock_delay_df, use_container_width=True, hide_index=True)
+    else:
+        delay_display = delay_top_df.rename(
+            columns={
+                "DIAS EFECTIVOS": "DIAS EN TALLER",
+                "SEMAFORO TALLER": "SEMAFORO",
+                "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
+                "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
+            }
+        )
+        st.dataframe(delay_display, use_container_width=True, hide_index=True)
+
+vehicle_display = filtered_vehicle_summary.copy()
+vehicle_display["FECHA"] = vehicle_display["FECHA"].apply(format_date)
+vehicle_display["VENTA"] = vehicle_display["VENTA"].apply(format_date)
+vehicle_display["MAGNA ADJUDICADO"] = vehicle_display["MAGNA_ADJUDICADO"].map({True: "SI", False: "NO"})
+vehicle_display["ESPERANDO REPUESTOS"] = vehicle_display["ESPERANDO REPUESTOS"].map({True: "SI", False: "NO"})
+vehicle_display = vehicle_display.rename(
+    columns={
+        "CANAL": "CANAL",
+        "DIAS_DECLARADOS": "DIAS EN TALLER CARGADOS",
+        "DIAS EFECTIVOS": "DIAS EN TALLER",
+        "NRO_SINIESTRO": "NRO SINIESTRO",
+        "NOMBRE_CLIENTE": "NOMBRE CLIENTE",
+        "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
+        "PIEZAS_SOLICITADAS": "PIEZAS SOLICITADAS",
+        "PIEZAS_GANADAS": "PIEZAS GANADAS",
+        "PIEZAS_PERDIDAS": "PIEZAS PERDIDAS",
+        "PIEZAS_PENDIENTES": "PIEZAS PENDIENTES",
+        "PIEZAS_SIN_PROVEEDOR": "PIEZAS SIN PROVEEDOR",
+        "PIEZAS_SIN_STOCK": "PIEZAS SIN STOCK",
+        "PIEZAS_MUY_CARAS": "PIEZAS MUY CARAS",
+        "PIEZAS_ENTREGADAS": "PIEZAS ENTREGADAS",
+        "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
+        "SEMAFORO TALLER": "SEMAFORO",
+        "SEMAFORO STOCK": "SEMAFORO STOCK",
+        "GARANTIA ESTADO": "GARANTIA ESTADO",
+        "MOTIVOS_DETECTADOS": "MOTIVOS DETECTADOS",
+        "LISTA_REPUESTOS": "LISTA REPUESTOS",
+    }
+)
+summary_columns = [
+    "FECHA",
+    "COMPANIA",
+    "NRO SINIESTRO",
+    "PROVEEDOR",
+    "MAGNA ADJUDICADO",
+    "CHASIS",
+    "MATRICULA",
+    "NOMBRE CLIENTE",
+    "MARCA",
+    "MODELO",
+    "STATUS DEL VEHICULO",
+    "ESPERANDO REPUESTOS",
+    "SEMAFORO",
+    "DIAS EN TALLER CARGADOS",
+    "DIAS EN TALLER",
+    "PIEZAS SOLICITADAS",
+    "PIEZAS GANADAS",
+    "PIEZAS PERDIDAS",
+    "PIEZAS PENDIENTES",
+    "PIEZAS SIN PROVEEDOR",
+    "PIEZAS ENTREGADAS",
+    "PIEZAS SIN ENTREGAR",
+    "LISTA REPUESTOS",
+]
+if is_particular_mode:
+    summary_columns = [
+        "FECHA",
+        "CANAL",
+        "PROVEEDOR",
+        "CHASIS",
+        "KILOMETRAJE",
+        "VENTA",
+        "ANTIGUEDAD ANOS",
+        "GARANTIA ESTADO",
+        "MATRICULA",
+        "NOMBRE CLIENTE",
+        "MARCA",
+        "MODELO",
+        "STATUS DEL VEHICULO",
+        "SEMAFORO STOCK",
+        "DIAS ESPERA STOCK",
+        "DIAS EN TALLER CARGADOS",
+        "DIAS EN TALLER",
+        "PIEZAS SOLICITADAS",
+        "PIEZAS SIN STOCK",
+        "PIEZAS MUY CARAS",
+        "PIEZAS SIN PROVEEDOR",
+        "MOTIVOS DETECTADOS",
+        "LISTA REPUESTOS",
+    ]
+summary_export = vehicle_display[summary_columns].copy()
+
+repuestos_display = filtered_df.copy()
+repuestos_display["FECHA"] = repuestos_display["FECHA"].apply(format_date)
+repuestos_display["FECHA ENTREGA PIEZA"] = repuestos_display["FECHA ENTREGA PIEZA"].apply(format_date)
+repuestos_display["VENTA"] = repuestos_display["VENTA"].apply(format_date)
+repuestos_display["MAGNA ADJUDICADO"] = repuestos_display["MAGNA_ADJUDICADO"].map({True: "SI", False: "NO"})
+repuestos_display["PROVEEDOR"] = repuestos_display["PROVEEDOR_DISPLAY"]
+repuestos_display = repuestos_display.rename(
+    columns={
+        "PIEZA_RESULTADO": "RESULTADO PIEZA",
+        "GARANTIA_ESTADO_PIEZA": "GARANTIA ESTADO PIEZA",
+        "DIAS EFECTIVOS PIEZA": "DIAS ESPERA PIEZA",
+        "SEMAFORO_STOCK_PIEZA": "SEMAFORO STOCK",
+        "MOTIVO_NORMALIZADO": "MOTIVO NORMALIZADO",
+    }
+)
+repuestos_columns = [
+    "FECHA",
+    "COMPANIA",
+    "NRO SINIESTRO",
+    "PROVEEDOR",
+    "MAGNA ADJUDICADO",
+    "RESULTADO PIEZA",
+    "CHASIS",
+    "MATRICULA",
+    "NOMBRE CLIENTE",
+    "MARCA",
+    "MODELO",
+    "CODIGO",
+    "REPUESTOS SOLICITADO",
+    "STATUS DEL REPUESTO",
+    "STATUS DEL VEHICULO",
+    "FECHA ENTREGA PIEZA",
+    "COMENTARIOS",
+]
+if is_particular_mode:
+    repuestos_columns = [
+        "FECHA",
+        "CANAL",
+        "PROVEEDOR",
+        "CHASIS",
+        "KILOMETRAJE",
+        "VENTA",
+        "GARANTIA ESTADO PIEZA",
+        "MATRICULA",
+        "NOMBRE CLIENTE",
+        "MARCA",
+        "MODELO",
+        "CODIGO",
+        "REPUESTOS SOLICITADO",
+        "MONTO PIEZA",
+        "MONTO M OBRA",
+        "MOTIVO",
+        "MOTIVO NORMALIZADO",
+        "DIAS ESPERA PIEZA",
+        "SEMAFORO STOCK",
+        "STATUS DEL REPUESTO",
+        "STATUS DEL VEHICULO",
+        "FECHA ENTREGA PIEZA",
+        "COMENTARIOS",
+    ]
+repuestos_export = repuestos_display[repuestos_columns].copy()
+
+if is_particular_mode:
+    delay_export = no_stock_delay_df.copy()
+    chart_tables = [
+        {"key": "chart_1", "df": warranty_df, "sheet_name": "Garantia vehiculos", "accent_color": "0F766E"},
+        {"key": "chart_2", "df": motivo_df, "sheet_name": "Motivos cliente", "accent_color": "1D4ED8"},
+        {"key": "chart_3", "df": stock_wait_df, "sheet_name": "Espera sin stock", "accent_color": "B45309"},
+        {"key": "chart_4", "df": brand_df, "sheet_name": "Marca modelo", "accent_color": "0F172A"},
+    ]
+    report_meta = {
+        "archivo": active_file_name,
+        "hoja": selected_sheet,
+        "generado": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "context_rows": [
+            ("Vehiculos analizados", str(total_vehicles)),
+            ("Garantias vigentes", str(garantia_vigente)),
+            ("Sin garantia", str(garantia_no_aplica)),
+            ("Revisar datos", str(garantia_revisar)),
+            ("Piezas sin stock", str(pieces_no_stock)),
+            ("Muy caro y hay stock", str(pieces_expensive_stock)),
+        ],
+        "filter_rows": [
+            ("Marca", ", ".join(selected_brands) if selected_brands else "Todas"),
+            ("Estado vehiculo", ", ".join(selected_status) if selected_status else "Todos"),
+            ("Proveedor", ", ".join(selected_providers) if selected_providers else "Todos"),
+            ("Semaforo stock", ", ".join(selected_semaforo) if selected_semaforo else "Todos"),
+            ("Solo piezas sin stock", "SI" if only_waiting_parts else "NO"),
+            ("Solo proveedor MAGNA", "SI" if only_magna else "NO"),
+            ("Busqueda", search_text if search_text else "Sin texto"),
+        ],
+        "kpis": [
+            {"title": "Vehiculos analizados", "value": total_vehicles, "subtitle": "Vehiculos incluidos despues de aplicar filtros.", "color": "0F766E"},
+            {"title": "Garantias vigentes", "value": garantia_vigente, "subtitle": "Dentro de 100 mil km y hasta 3 años.", "color": "1D4ED8"},
+            {"title": "Sin garantia", "value": garantia_no_aplica, "subtitle": "Fuera por kilometraje o antigüedad.", "color": "B45309"},
+            {"title": "Revisar datos", "value": garantia_revisar, "subtitle": "Falta kilometraje o fecha de venta.", "color": "0F172A"},
+            {"title": "Piezas sin stock", "value": pieces_no_stock, "subtitle": "Motivo NO HAY STOCK.", "color": "0F766E"},
+            {"title": "Muy caro y hay stock", "value": pieces_expensive_stock, "subtitle": "Cliente no cambia por precio.", "color": "1D4ED8"},
+            {"title": "Espera critica", "value": critical_stock_pieces, "subtitle": "No stock por encima de 55 dias.", "color": "B45309"},
+            {"title": "Espera promedio", "value": f"{avg_stock_wait:.0f}", "subtitle": "Promedio de espera sin stock.", "color": "0F172A"},
+        ],
+        "chart_configs": [
+            {"key": "chart_1", "title": "Estado de garantia", "anchor": "A24", "color": "0F766E"},
+            {"key": "chart_2", "title": "Motivos del cliente", "anchor": "G24", "color": "1D4ED8"},
+            {"key": "chart_3", "title": "Espera por no stock", "anchor": "A39", "color": "B45309"},
+            {"key": "chart_4", "title": f"Vehiculos por {brand_label.lower()}", "anchor": "G39", "color": "0F172A"},
+        ],
+    }
+else:
+    delay_export = delay_top_df.rename(
+        columns={
+            "DIAS EFECTIVOS": "DIAS EN TALLER",
+            "SEMAFORO TALLER": "SEMAFORO",
+            "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
+            "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
+        }
+    ).copy()
+    chart_tables = [
+        {"key": "chart_1", "df": piece_result_df, "sheet_name": "Resultado piezas", "accent_color": "0F766E"},
+        {"key": "chart_2", "df": status_df, "sheet_name": "Estados vehiculo", "accent_color": "1D4ED8"},
+        {"key": "chart_3", "df": semaforo_df, "sheet_name": "Semaforo taller", "accent_color": "B45309"},
+        {"key": "chart_4", "df": brand_df, "sheet_name": "Marca modelo", "accent_color": "0F172A"},
+    ]
+    report_meta = {
+        "archivo": active_file_name,
+        "hoja": selected_sheet,
+        "generado": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "context_rows": [
+            ("Vehiculos analizados", str(total_vehicles)),
+            ("Piezas analizadas", str(total_pieces)),
+            ("Piezas ganadas MAGNA", str(won_pieces)),
+            ("Piezas perdidas", str(lost_pieces)),
+            ("Piezas sin proveedor", str(pending_pieces)),
+            ("Efectividad", f"{effectiveness:.1f}%"),
+        ],
+        "filter_rows": [
+            ("Marca", ", ".join(selected_brands) if selected_brands else "Todas"),
+            ("Estado vehiculo", ", ".join(selected_status) if selected_status else "Todos"),
+            ("Proveedor", ", ".join(selected_providers) if selected_providers else "Todos"),
+            ("Semaforo taller", ", ".join(selected_semaforo) if selected_semaforo else "Todos"),
+            ("Solo esperando repuestos", "SI" if only_waiting_parts else "NO"),
+            ("Solo piezas ganadas MAGNA", "SI" if only_magna else "NO"),
+            ("Busqueda", search_text if search_text else "Sin texto"),
+        ],
+        "kpis": [
+            {"title": "Vehiculos analizados", "value": total_vehicles, "subtitle": "Vehiculos incluidos despues de aplicar filtros.", "color": "0F766E"},
+            {"title": "Vehiculos en taller", "value": vehicles_in_shop, "subtitle": "Estado actual EN TALLER.", "color": "1D4ED8"},
+            {"title": "Esperando repuestos", "value": vehicles_waiting_parts, "subtitle": "Vehiculos frenados por piezas sin entregar.", "color": "B45309"},
+            {"title": "Dias promedio", "value": f"{avg_days:.0f}", "subtitle": "Promedio usando dias cargados o estimados.", "color": "0F172A"},
+            {"title": "Piezas ganadas MAGNA", "value": won_pieces, "subtitle": "Proveedor adjudicado igual a MAGNA.", "color": "0F766E"},
+            {"title": "Piezas perdidas", "value": lost_pieces, "subtitle": "Adjudicadas a otros proveedores.", "color": "1D4ED8"},
+            {"title": "Piezas sin proveedor", "value": pending_pieces, "subtitle": "Filas donde la columna Proveedor esta vacia.", "color": "B45309"},
+            {"title": "Efectividad", "value": f"{effectiveness:.1f}%", "subtitle": "Ganadas sobre ganadas + perdidas.", "color": "0F172A"},
+        ],
+        "chart_configs": [
+            {"key": "chart_1", "title": "Resultado de piezas", "anchor": "A24", "color": "0F766E"},
+            {"key": "chart_2", "title": "Vehiculos por estado", "anchor": "G24", "color": "1D4ED8"},
+            {"key": "chart_3", "title": "Semaforo de demora", "anchor": "A39", "color": "B45309"},
+            {"key": "chart_4", "title": f"Vehiculos por {brand_label.lower()}", "anchor": "G39", "color": "0F172A"},
+        ],
+    }
+
+download_bytes = dataframe_to_excel_bytes(
+    summary_export,
+    repuestos_export,
+    provider_df,
+    delay_export,
+    report_meta,
+    chart_tables,
+)
+
+with tabs[3]:
+    st.subheader("Detalle por vehiculo")
+    vehicle_sort_cols = ["SEMAFORO", "DIAS EN TALLER"] if "SEMAFORO" in summary_export.columns else ["GARANTIA ESTADO", "DIAS EN TALLER"]
+    vehicle_sort_asc = [True, False]
+    st.dataframe(
+        summary_export.sort_values(vehicle_sort_cols, ascending=vehicle_sort_asc),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+with tabs[4]:
+    st.subheader("Detalle de repuestos")
+    st.dataframe(
+        repuestos_export.sort_values(["PROVEEDOR", "CHASIS", "REPUESTOS SOLICITADO"], ascending=[True, True, True]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.download_button(
+    "Descargar reporte ejecutivo en Excel",
+    data=download_bytes,
+    file_name=f"resumen_taller_magna_{selected_sheet.lower().replace(' ', '_')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=True,
+)
