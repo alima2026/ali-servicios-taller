@@ -1370,4 +1370,56 @@ report_meta = {
         {
             "title": "Piezas perdidas",
             "value": lost_pieces,
-            "subtitle": "Adjudicadas a ot
+            "subtitle": "Adjudicadas a otros proveedores.",
+            "color": "1D4ED8",
+        },
+        {
+            "title": "Piezas sin proveedor",
+            "value": pending_pieces,
+            "subtitle": "Filas donde la columna Proveedor esta vacia.",
+            "color": "B45309",
+        },
+        {
+            "title": "Efectividad",
+            "value": f"{effectiveness:.1f}%",
+            "subtitle": "Ganadas sobre ganadas + perdidas.",
+            "color": "0F172A",
+        },
+    ],
+}
+
+download_bytes = dataframe_to_excel_bytes(
+    summary_export,
+    repuestos_export,
+    provider_df,
+    piece_result_df,
+    semaforo_df,
+    status_df,
+    brand_df,
+    delay_export,
+    report_meta,
+)
+
+with tabs[3]:
+    st.subheader("Detalle por vehiculo")
+    st.dataframe(
+        summary_export.sort_values(["SEMAFORO", "DIAS EN TALLER"], ascending=[True, False]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+with tabs[4]:
+    st.subheader("Detalle de repuestos")
+    st.dataframe(
+        repuestos_export.sort_values(["PROVEEDOR", "CHASIS", "REPUESTOS SOLICITADO"], ascending=[True, True, True]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.download_button(
+    "Descargar reporte ejecutivo en Excel",
+    data=download_bytes,
+    file_name=f"resumen_taller_magna_{selected_sheet.lower().replace(' ', '_')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=True,
+)
