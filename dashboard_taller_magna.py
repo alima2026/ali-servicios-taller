@@ -25,7 +25,7 @@ st.set_page_config(
 
 DEFAULT_EXCEL_PATH = Path(__file__).with_name("vehiculos_en_reparacion_magna.xlsx")
 PREFERRED_SHEETS = ["SINIESTROS", "PARTICULAR Y GARANTIAS"]
-WORKBOOK_CACHE_VERSION = "2026-04-08-01"
+WORKBOOK_CACHE_VERSION = "2026-04-08-02"
 
 CANONICAL_COLUMNS = [
     "FECHA",
@@ -82,7 +82,9 @@ COLUMN_ALIASES = {
     "COMENTARIOS": "COMENTARIOS",
 }
 
-PIECE_RESULT_ORDER = ["GANADA MAGNA", "PERDIDA", "PENDIENTE"]
+UNASSIGNED_PROVIDER_LABEL = "SIN PROVEEDOR ASIGNADO"
+MIXED_PROVIDER_LABEL = "PROVEEDORES MIXTOS"
+PIECE_RESULT_ORDER = ["GANADA MAGNA", "PERDIDA", "SIN PROVEEDOR"]
 SEMAFORO_ORDER = ["NORMAL", "ATENCION", "DEMORA ALTA", "CRITICA", "SIN DATO"]
 
 
@@ -230,6 +232,27 @@ def count_non_empty(series: pd.Series) -> int:
     return int(sum(bool(normalize_text(value)) for value in series))
 
 
+def provider_display_label(value: object) -> str:
+    text = normalize_text(value).upper()
+    return text if text else UNASSIGNED_PROVIDER_LABEL
+
+
+def vehicle_provider_label(series: pd.Series) -> str:
+    provider_values = [normalize_text(value).upper() for value in series if normalize_text(value)]
+    unique_values: list[str] = list(dict.fromkeys(provider_values))
+    has_unassigned = int(sum(not normalize_text(value) for value in series)) > 0
+
+    if not unique_values:
+        return UNASSIGNED_PROVIDER_LABEL
+    if len(unique_values) == 1 and not has_unassigned:
+        return unique_values[0]
+    if len(unique_values) == 1 and has_unassigned:
+        return f"{unique_values[0]} + SIN ASIGNAR"
+    if has_unassigned:
+        return f"{MIXED_PROVIDER_LABEL} + SIN ASIGNAR"
+    return MIXED_PROVIDER_LABEL
+
+
 def unique_join(series: pd.Series) -> str:
     seen: set[str] = set()
     values: list[str] = []
@@ -268,7 +291,7 @@ def standardize_columns(columns: list[object]) -> list[str]:
 def classify_piece_result(provider: object) -> str:
     key = slug_text(provider)
     if not key:
-        return "PENDIENTE"
+        return "SIN PROVEEDOR"
     if key == "MAGNA":
         return "GANADA MAGNA"
     return "PERDIDA"
@@ -306,7 +329,6 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "DIAS EN TALLER",
         "COMPANIA",
         "NRO SINIESTRO",
-        "PROVEEDOR",
         "CHASIS",
         "MATRICULA",
         "NOMBRE CLIENTE",
@@ -333,7 +355,6 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "DIAS EN TALLER",
         "COMPANIA",
         "NRO SINIESTRO",
-        "PROVEEDOR",
         "CHASIS",
         "MATRICULA",
         "NOMBRE CLIENTE",
@@ -367,6 +388,7 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         df[col] = df[col].apply(normalize_text)
 
     df["PROVEEDOR_NORMALIZADO"] = df["PROVEEDOR"].apply(slug_text)
+    df["PROVEEDOR_DISPLAY"] = df["PROVEEDOR"].apply(provider_display_label)
     df["MAGNA_ADJUDICADO"] = df["PROVEEDOR_NORMALIZADO"] == "MAGNA"
     df["PIEZA_RESULTADO"] = df["PROVEEDOR"].apply(classify_piece_result)
     df["PIEZA_ENTREGADA"] = df["STATUS DEL REPUESTO"].apply(slug_text) == "ENTREGADO"
@@ -395,6 +417,9 @@ def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     if "PROVEEDOR_NORMALIZADO" not in df.columns:
         df["PROVEEDOR_NORMALIZADO"] = df["PROVEEDOR"].apply(slug_text)
+
+    if "PROVEEDOR_DISPLAY" not in df.columns:
+        df["PROVEEDOR_DISPLAY"] = df["PROVEEDOR"].apply(provider_display_label)
 
     if "MAGNA_ADJUDICADO" not in df.columns:
         df["MAGNA_ADJUDICADO"] = df["PROVEEDOR_NORMALIZADO"] == "MAGNA"
@@ -457,6 +482,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "PIEZAS GANADAS",
                 "PIEZAS PERDIDAS",
                 "PIEZAS PENDIENTES",
+                "PIEZAS SIN PROVEEDOR",
                 "PIEZAS ENTREGADAS",
                 "PIEZAS SIN ENTREGAR",
                 "ESPERANDO REPUESTOS",
@@ -471,7 +497,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
         DIAS_DECLARADOS=("DIAS EN TALLER", "max"),
         COMPANIA=("COMPANIA", first_non_empty),
         NRO_SINIESTRO=("NRO SINIESTRO", first_non_empty),
-        PROVEEDOR=("PROVEEDOR", first_non_empty),
+        PROVEEDOR=("PROVEEDOR", vehicle_provider_label),
         CHASIS=("CHASIS", first_non_empty),
         MATRICULA=("MATRICULA", first_non_empty),
         NOMBRE_CLIENTE=("NOMBRE CLIENTE", first_non_empty),
@@ -481,7 +507,8 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
         PIEZAS_SOLICITADAS=("REPUESTOS SOLICITADO", count_non_empty),
         PIEZAS_GANADAS=("PIEZA_RESULTADO", lambda series: int(sum(value == "GANADA MAGNA" for value in series))),
         PIEZAS_PERDIDAS=("PIEZA_RESULTADO", lambda series: int(sum(value == "PERDIDA" for value in series))),
-        PIEZAS_PENDIENTES=("PIEZA_RESULTADO", lambda series: int(sum(value == "PENDIENTE" for value in series))),
+        PIEZAS_PENDIENTES=("PIEZA_RESULTADO", lambda series: int(sum(value == "SIN PROVEEDOR" for value in series))),
+        PIEZAS_SIN_PROVEEDOR=("PROVEEDOR", lambda series: int(sum(not normalize_text(value) for value in series))),
         PIEZAS_ENTREGADAS=("PIEZA_ENTREGADA", "sum"),
         LISTA_REPUESTOS=("REPUESTOS SOLICITADO", unique_join),
         MAGNA_ADJUDICADO=("MAGNA_ADJUDICADO", "max"),
@@ -506,13 +533,12 @@ def provider_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["PROVEEDOR", "PIEZAS"])
     data = (
-        df.groupby("PROVEEDOR", dropna=False)
+        df.groupby("PROVEEDOR_DISPLAY", dropna=False)
         .agg(PIEZAS=("REPUESTOS SOLICITADO", count_non_empty))
         .reset_index()
         .sort_values("PIEZAS", ascending=False)
     )
-    data["PROVEEDOR"] = data["PROVEEDOR"].replace("", "SIN PROVEEDOR")
-    return data
+    return data.rename(columns={"PROVEEDOR_DISPLAY": "PROVEEDOR"})
 
 
 def pieces_result_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -967,7 +993,7 @@ st.markdown(
     """
     <div class="title-card">
         <h1>Dashboard <span>Taller Magna</span></h1>
-        <p>Resumen ejecutivo de piezas ganadas, perdidas, pendientes y demoras por falta de repuestos.</p>
+        <p>Resumen ejecutivo de piezas ganadas, perdidas, sin proveedor asignado y demoras por falta de repuestos.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1005,7 +1031,7 @@ st.sidebar.subheader("Filtros")
 
 brand_options = sorted([value for value in vehicle_summary_df["MARCA"].dropna().unique().tolist() if value])
 status_options = sorted([value for value in vehicle_summary_df["STATUS_DEL_VEHICULO"].dropna().unique().tolist() if value])
-provider_options = sorted([value for value in raw_df["PROVEEDOR"].dropna().unique().tolist() if value])
+provider_options = sorted([value for value in raw_df["PROVEEDOR_DISPLAY"].dropna().unique().tolist() if value])
 semaforo_options = [value for value in SEMAFORO_ORDER if value in vehicle_summary_df["SEMAFORO TALLER"].astype(str).tolist()]
 
 selected_brands = st.sidebar.multiselect("Marca", brand_options, default=brand_options)
@@ -1032,7 +1058,7 @@ filtered_vehicle_ids = filtered_vehicle_summary["VEHICULO_ID"].tolist()
 filtered_df = raw_df[raw_df["VEHICULO_ID"].isin(filtered_vehicle_ids)].copy()
 
 if provider_options:
-    filtered_df = filtered_df[filtered_df["PROVEEDOR"].isin(selected_providers)].copy()
+    filtered_df = filtered_df[filtered_df["PROVEEDOR_DISPLAY"].isin(selected_providers)].copy()
 if only_magna:
     filtered_df = filtered_df[filtered_df["MAGNA_ADJUDICADO"]].copy()
 
@@ -1053,7 +1079,7 @@ critical_vehicles = int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("CRITICA"
 total_pieces = int(count_non_empty(filtered_df["REPUESTOS SOLICITADO"]))
 won_pieces = int((filtered_df["PIEZA_RESULTADO"] == "GANADA MAGNA").sum())
 lost_pieces = int((filtered_df["PIEZA_RESULTADO"] == "PERDIDA").sum())
-pending_pieces = int((filtered_df["PIEZA_RESULTADO"] == "PENDIENTE").sum())
+pending_pieces = int((filtered_df["PIEZA_RESULTADO"] == "SIN PROVEEDOR").sum())
 delivered_pieces = int(filtered_df["PIEZA_ENTREGADA"].sum())
 
 effectiveness = (won_pieces / (won_pieces + lost_pieces) * 100) if (won_pieces + lost_pieces) else 0
@@ -1134,7 +1160,7 @@ with tabs[0]:
     with metric_cols_bottom[1]:
         metric_card("Piezas perdidas", lost_pieces, "Piezas adjudicadas a otros proveedores.")
     with metric_cols_bottom[2]:
-        metric_card("Piezas pendientes", pending_pieces, "Piezas todavia sin proveedor adjudicado.")
+        metric_card("Piezas sin proveedor", pending_pieces, "Filas donde la columna Proveedor esta vacia.")
     with metric_cols_bottom[3]:
         metric_card("% efectividad", f"{effectiveness:.1f}%", "Ganadas sobre ganadas + perdidas.")
 
@@ -1161,11 +1187,11 @@ with tabs[1]:
     with metric_cols[2]:
         metric_card("Perdidas", lost_pieces, "Piezas adjudicadas a otros proveedores.")
     with metric_cols[3]:
-        metric_card("Entregadas", delivered_pieces, "Piezas cuyo status del repuesto es ENTREGADO.")
+        metric_card("Sin proveedor", pending_pieces, "Piezas con la columna Proveedor vacia.")
 
     chart_col_1, chart_col_2 = st.columns(2)
     with chart_col_1:
-        horizontal_bar(piece_result_df, "RESULTADO", "PIEZAS", "Piezas ganadas, perdidas y pendientes", "#0f766e")
+        horizontal_bar(piece_result_df, "RESULTADO", "PIEZAS", "Piezas ganadas, perdidas y sin proveedor", "#0f766e")
     with chart_col_2:
         horizontal_bar(provider_df.head(10), "PROVEEDOR", "PIEZAS", "Top proveedores por piezas", "#2563eb")
 
@@ -1216,6 +1242,7 @@ vehicle_display = vehicle_display.rename(
         "PIEZAS_GANADAS": "PIEZAS GANADAS",
         "PIEZAS_PERDIDAS": "PIEZAS PERDIDAS",
         "PIEZAS_PENDIENTES": "PIEZAS PENDIENTES",
+        "PIEZAS_SIN_PROVEEDOR": "PIEZAS SIN PROVEEDOR",
         "PIEZAS_ENTREGADAS": "PIEZAS ENTREGADAS",
         "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
         "SEMAFORO TALLER": "SEMAFORO",
@@ -1243,6 +1270,7 @@ summary_export = vehicle_display[
         "PIEZAS GANADAS",
         "PIEZAS PERDIDAS",
         "PIEZAS PENDIENTES",
+        "PIEZAS SIN PROVEEDOR",
         "PIEZAS ENTREGADAS",
         "PIEZAS SIN ENTREGAR",
         "LISTA REPUESTOS",
@@ -1253,6 +1281,7 @@ repuestos_display = filtered_df.copy()
 repuestos_display["FECHA"] = repuestos_display["FECHA"].apply(format_date)
 repuestos_display["FECHA ENTREGA PIEZA"] = repuestos_display["FECHA ENTREGA PIEZA"].apply(format_date)
 repuestos_display["MAGNA ADJUDICADO"] = repuestos_display["MAGNA_ADJUDICADO"].map({True: "SI", False: "NO"})
+repuestos_display["PROVEEDOR"] = repuestos_display["PROVEEDOR_DISPLAY"]
 repuestos_display = repuestos_display.rename(columns={"PIEZA_RESULTADO": "RESULTADO PIEZA"})
 repuestos_export = repuestos_display[
     [
@@ -1295,7 +1324,7 @@ report_meta = {
         ("Piezas analizadas", str(total_pieces)),
         ("Piezas ganadas MAGNA", str(won_pieces)),
         ("Piezas perdidas", str(lost_pieces)),
-        ("Piezas pendientes", str(pending_pieces)),
+        ("Piezas sin proveedor", str(pending_pieces)),
         ("Efectividad", f"{effectiveness:.1f}%"),
     ],
     "filter_rows": [
@@ -1341,56 +1370,4 @@ report_meta = {
         {
             "title": "Piezas perdidas",
             "value": lost_pieces,
-            "subtitle": "Adjudicadas a otros proveedores.",
-            "color": "1D4ED8",
-        },
-        {
-            "title": "Piezas pendientes",
-            "value": pending_pieces,
-            "subtitle": "Todavia sin proveedor adjudicado.",
-            "color": "B45309",
-        },
-        {
-            "title": "Efectividad",
-            "value": f"{effectiveness:.1f}%",
-            "subtitle": "Ganadas sobre ganadas + perdidas.",
-            "color": "0F172A",
-        },
-    ],
-}
-
-download_bytes = dataframe_to_excel_bytes(
-    summary_export,
-    repuestos_export,
-    provider_df,
-    piece_result_df,
-    semaforo_df,
-    status_df,
-    brand_df,
-    delay_export,
-    report_meta,
-)
-
-with tabs[3]:
-    st.subheader("Detalle por vehiculo")
-    st.dataframe(
-        summary_export.sort_values(["SEMAFORO", "DIAS EN TALLER"], ascending=[True, False]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-with tabs[4]:
-    st.subheader("Detalle de repuestos")
-    st.dataframe(
-        repuestos_export.sort_values(["PROVEEDOR", "CHASIS", "REPUESTOS SOLICITADO"], ascending=[True, True, True]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-st.download_button(
-    "Descargar reporte ejecutivo en Excel",
-    data=download_bytes,
-    file_name=f"resumen_taller_magna_{selected_sheet.lower().replace(' ', '_')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    use_container_width=True,
-)
+            "subtitle": "Adjudicadas a ot
