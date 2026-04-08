@@ -446,7 +446,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
     fallback_days = fallback_days.where(fallback_days >= 0)
     summary["DIAS EFECTIVOS"] = summary["DIAS_DECLARADOS"].where(summary["DIAS_DECLARADOS"].notna(), fallback_days)
     summary["DIAS EFECTIVOS"] = pd.to_numeric(summary["DIAS EFECTIVOS"], errors="coerce")
-    summary["PIEZAS SIN ENTREGAR"] = summary["PIEZAS SOLICITADAS"] - summary["PIEZAS ENTREGADAS"]
+    summary["PIEZAS SIN ENTREGAR"] = summary["PIEZAS_SOLICITADAS"] - summary["PIEZAS_ENTREGADAS"]
     status_slug = summary["STATUS_DEL_VEHICULO"].apply(slug_text)
     summary["ESPERANDO REPUESTOS"] = (
         status_slug.eq("ESPERANDO REPUESTOS")
