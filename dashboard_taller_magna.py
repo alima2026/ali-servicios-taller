@@ -25,7 +25,7 @@ st.set_page_config(
 
 DEFAULT_EXCEL_PATH = Path(__file__).with_name("vehiculos_en_reparacion_magna.xlsx")
 PREFERRED_SHEETS = ["SINIESTROS", "PARTICULAR Y GARANTIAS"]
-WORKBOOK_CACHE_VERSION = "2026-04-08-02"
+WORKBOOK_CACHE_VERSION = "2026-04-08-04"
 
 CANONICAL_COLUMNS = [
     "FECHA",
@@ -35,6 +35,7 @@ CANONICAL_COLUMNS = [
     "NRO SINIESTRO",
     "PROVEEDOR",
     "CHASIS",
+    "KILOMETRAJE",
     "MATRICULA",
     "NOMBRE CLIENTE",
     "TELEFONO",
@@ -47,6 +48,8 @@ CANONICAL_COLUMNS = [
     "STATUS DEL REPUESTO",
     "STATUS DEL VEHICULO",
     "FECHA ENTREGA PIEZA",
+    "VENTA",
+    "MOTIVO",
     "COMENTARIOS",
 ]
 
@@ -63,6 +66,9 @@ COLUMN_ALIASES = {
     "NUMERO SINIESTRO": "NRO SINIESTRO",
     "PROVEEDOR": "PROVEEDOR",
     "CHASIS": "CHASIS",
+    "KILOMETRAJE": "KILOMETRAJE",
+    "KILOMETROS": "KILOMETRAJE",
+    "KM": "KILOMETRAJE",
     "MATRICULA": "MATRICULA",
     "NOMBRE CLIENTE": "NOMBRE CLIENTE",
     "TELEFONO": "TELEFONO",
@@ -79,6 +85,10 @@ COLUMN_ALIASES = {
     "STATUS DEL VEHICULO": "STATUS DEL VEHICULO",
     "STATUS VEHICULO": "STATUS DEL VEHICULO",
     "FECHA ENTREGA PIEZA": "FECHA ENTREGA PIEZA",
+    "VENTA": "VENTA",
+    "FECHA VENTA": "VENTA",
+    "FECHA DE VENTA": "VENTA",
+    "MOTIVO": "MOTIVO",
     "COMENTARIOS": "COMENTARIOS",
 }
 
@@ -86,6 +96,23 @@ UNASSIGNED_PROVIDER_LABEL = "SIN PROVEEDOR ASIGNADO"
 MIXED_PROVIDER_LABEL = "PROVEEDORES MIXTOS"
 PIECE_RESULT_ORDER = ["GANADA MAGNA", "PERDIDA", "SIN PROVEEDOR"]
 SEMAFORO_ORDER = ["NORMAL", "ATENCION", "DEMORA ALTA", "CRITICA", "SIN DATO"]
+WARRANTY_STATUS_ORDER = [
+    "GARANTIA VIGENTE",
+    "SIN GARANTIA >100.000 KM",
+    "SIN GARANTIA >3 ANOS",
+    "SIN GARANTIA >100.000 KM Y >3 ANOS",
+    "REVISAR KILOMETRAJE",
+    "REVISAR FECHA DE VENTA",
+    "REVISAR KILOMETRAJE Y FECHA DE VENTA",
+    "NO GARANTIA",
+]
+MOTIVO_PARTICULAR_ORDER = [
+    "MUY CARO Y HAY STOCK",
+    "NO HAY STOCK",
+    "SIN MOTIVO",
+    "OTROS",
+]
+STOCK_WAIT_ORDER = ["0-40 DIAS", "41-55 DIAS - ATENCION", ">55 DIAS - CRITICA", "SIN DATO"]
 
 
 def inject_css() -> None:
@@ -310,6 +337,61 @@ def classify_semaforo(dias: object) -> str:
     return "CRITICA"
 
 
+def normalize_motivo_particular(value: object) -> str:
+    key = slug_text(value)
+    if not key:
+        return "SIN MOTIVO"
+    if "NO HAY STOCK" in key or "SIN STOCK" in key:
+        return "NO HAY STOCK"
+    if "CARO" in key:
+        return "MUY CARO Y HAY STOCK"
+    return "OTROS"
+
+
+def classify_stock_wait(dias: object) -> str:
+    if pd.isna(dias):
+        return "SIN DATO"
+    dias = float(dias)
+    if dias <= 40:
+        return "0-40 DIAS"
+    if dias <= 55:
+        return "41-55 DIAS - ATENCION"
+    return ">55 DIAS - CRITICA"
+
+
+def classify_warranty_status(canal: object, kilometraje: object, venta: object) -> str:
+    canal_key = slug_text(canal)
+    if canal_key != "GARANTIA":
+        return "NO GARANTIA"
+
+    km_ok = None
+    if pd.notna(kilometraje):
+        km_ok = float(kilometraje) <= 100000
+
+    venta_ok = None
+    if isinstance(venta, pd.Timestamp) and not pd.isna(venta):
+        age_days = (pd.Timestamp(date.today()) - venta.normalize()).days
+        venta_ok = age_days <= int(365.25 * 3)
+
+    if km_ok is False and venta_ok is False:
+        return "SIN GARANTIA >100.000 KM Y >3 ANOS"
+    if km_ok is False:
+        return "SIN GARANTIA >100.000 KM"
+    if venta_ok is False:
+        return "SIN GARANTIA >3 ANOS"
+    if km_ok is None and venta_ok is None:
+        return "REVISAR KILOMETRAJE Y FECHA DE VENTA"
+    if km_ok is None:
+        return "REVISAR KILOMETRAJE"
+    if venta_ok is None:
+        return "REVISAR FECHA DE VENTA"
+    return "GARANTIA VIGENTE"
+
+
+def warranty_status_slug(value: object) -> str:
+    return slug_text(value)
+
+
 def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     df = df.copy()
     for col in CANONICAL_COLUMNS:
@@ -330,6 +412,7 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "COMPANIA",
         "NRO SINIESTRO",
         "CHASIS",
+        "KILOMETRAJE",
         "MATRICULA",
         "NOMBRE CLIENTE",
         "TELEFONO",
@@ -338,6 +421,7 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "STATUS DEL REPUESTO",
         "STATUS DEL VEHICULO",
         "FECHA ENTREGA PIEZA",
+        "VENTA",
         "COMENTARIOS",
     ]
     for col in fillable_cols + ["CODIGO", "REPUESTOS SOLICITADO", "MONTO PIEZA", "MONTO M OBRA"]:
@@ -356,18 +440,22 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "COMPANIA",
         "NRO SINIESTRO",
         "CHASIS",
+        "KILOMETRAJE",
         "MATRICULA",
         "NOMBRE CLIENTE",
         "TELEFONO",
         "MARCA",
         "MODELO",
         "STATUS DEL VEHICULO",
+        "VENTA",
     ]:
         df[col] = grouped[col].transform(lambda series: series.ffill().bfill())
 
     df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
     df["FECHA ENTREGA PIEZA"] = pd.to_datetime(df["FECHA ENTREGA PIEZA"], errors="coerce")
+    df["VENTA"] = pd.to_datetime(df["VENTA"], errors="coerce")
     df["DIAS EN TALLER"] = pd.to_numeric(df["DIAS EN TALLER"], errors="coerce")
+    df["KILOMETRAJE"] = pd.to_numeric(df["KILOMETRAJE"], errors="coerce")
     df["MONTO PIEZA"] = pd.to_numeric(df["MONTO PIEZA"], errors="coerce")
     df["MONTO M OBRA"] = pd.to_numeric(df["MONTO M OBRA"], errors="coerce")
 
@@ -384,14 +472,29 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "REPUESTOS SOLICITADO",
         "COMENTARIOS",
         "NRO SINIESTRO",
+        "MOTIVO",
     ]:
         df[col] = df[col].apply(normalize_text)
 
+    fallback_days = (pd.Timestamp(date.today()) - df["FECHA"]).dt.days
+    fallback_days = fallback_days.where(fallback_days >= 0)
+    df["DIAS EFECTIVOS PIEZA"] = df["DIAS EN TALLER"].where(df["DIAS EN TALLER"].notna(), fallback_days)
+    df["MOTIVO_NORMALIZADO"] = df["MOTIVO"].apply(normalize_motivo_particular)
     df["PROVEEDOR_NORMALIZADO"] = df["PROVEEDOR"].apply(slug_text)
     df["PROVEEDOR_DISPLAY"] = df["PROVEEDOR"].apply(provider_display_label)
     df["MAGNA_ADJUDICADO"] = df["PROVEEDOR_NORMALIZADO"] == "MAGNA"
     df["PIEZA_RESULTADO"] = df["PROVEEDOR"].apply(classify_piece_result)
     df["PIEZA_ENTREGADA"] = df["STATUS DEL REPUESTO"].apply(slug_text) == "ENTREGADO"
+    df["GARANTIA_ESTADO_PIEZA"] = df.apply(
+        lambda row: classify_warranty_status(row.get("CANAL"), row.get("KILOMETRAJE"), row.get("VENTA")),
+        axis=1,
+    )
+    df["SEMAFORO_STOCK_PIEZA"] = df.apply(
+        lambda row: classify_stock_wait(row.get("DIAS EFECTIVOS PIEZA"))
+        if row.get("MOTIVO_NORMALIZADO") == "NO HAY STOCK"
+        else "SIN DATO",
+        axis=1,
+    )
     df["SOURCE_SHEET"] = sheet_name
     return df.reset_index(drop=True)
 
@@ -403,17 +506,44 @@ def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NA
 
-    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA"]:
+    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA", "MOTIVO"]:
         if col not in df.columns:
             df[col] = pd.NA
 
-    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA"]:
+    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA", "MOTIVO"]:
         df[col] = df[col].apply(normalize_text)
+
+    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+    df["VENTA"] = pd.to_datetime(df["VENTA"], errors="coerce")
+    df["FECHA ENTREGA PIEZA"] = pd.to_datetime(df["FECHA ENTREGA PIEZA"], errors="coerce")
+    df["DIAS EN TALLER"] = pd.to_numeric(df["DIAS EN TALLER"], errors="coerce")
+    df["KILOMETRAJE"] = pd.to_numeric(df["KILOMETRAJE"], errors="coerce")
 
     if "VEHICULO_ID" not in df.columns:
         chasis = df["CHASIS"].replace("", pd.NA)
         matricula = df["MATRICULA"].replace("", pd.NA)
         df["VEHICULO_ID"] = chasis.where(chasis.notna(), matricula)
+
+    vehicle_level_cols = [
+        "FECHA",
+        "CANAL",
+        "DIAS EN TALLER",
+        "COMPANIA",
+        "NRO SINIESTRO",
+        "CHASIS",
+        "KILOMETRAJE",
+        "MATRICULA",
+        "NOMBRE CLIENTE",
+        "TELEFONO",
+        "MARCA",
+        "MODELO",
+        "STATUS DEL VEHICULO",
+        "VENTA",
+    ]
+    grouped = df.groupby("VEHICULO_ID", dropna=False, sort=False)
+    for col in vehicle_level_cols:
+        if col in df.columns:
+            df[col] = grouped[col].transform(lambda series: series.replace("", pd.NA).ffill().bfill())
 
     if "PROVEEDOR_NORMALIZADO" not in df.columns:
         df["PROVEEDOR_NORMALIZADO"] = df["PROVEEDOR"].apply(slug_text)
@@ -429,6 +559,28 @@ def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     if "PIEZA_ENTREGADA" not in df.columns:
         df["PIEZA_ENTREGADA"] = df["STATUS DEL REPUESTO"].apply(slug_text) == "ENTREGADO"
+
+    if "DIAS EFECTIVOS PIEZA" not in df.columns:
+        fallback_days = (pd.Timestamp(date.today()) - df["FECHA"]).dt.days
+        fallback_days = fallback_days.where(fallback_days >= 0)
+        df["DIAS EFECTIVOS PIEZA"] = df["DIAS EN TALLER"].where(df["DIAS EN TALLER"].notna(), fallback_days)
+
+    if "MOTIVO_NORMALIZADO" not in df.columns:
+        df["MOTIVO_NORMALIZADO"] = df["MOTIVO"].apply(normalize_motivo_particular)
+
+    if "GARANTIA_ESTADO_PIEZA" not in df.columns:
+        df["GARANTIA_ESTADO_PIEZA"] = df.apply(
+            lambda row: classify_warranty_status(row.get("CANAL"), row.get("KILOMETRAJE"), row.get("VENTA")),
+            axis=1,
+        )
+
+    if "SEMAFORO_STOCK_PIEZA" not in df.columns:
+        df["SEMAFORO_STOCK_PIEZA"] = df.apply(
+            lambda row: classify_stock_wait(row.get("DIAS EFECTIVOS PIEZA"))
+            if row.get("MOTIVO_NORMALIZADO") == "NO HAY STOCK"
+            else "SIN DATO",
+            axis=1,
+        )
 
     if "SOURCE_SHEET" not in df.columns:
         df["SOURCE_SHEET"] = ""
@@ -466,6 +618,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
             columns=[
                 "VEHICULO_ID",
                 "FECHA",
+                "CANAL",
                 "DIAS EN TALLER",
                 "DIAS EFECTIVOS",
                 "SEMAFORO TALLER",
@@ -473,6 +626,10 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "NRO SINIESTRO",
                 "PROVEEDOR",
                 "CHASIS",
+                "KILOMETRAJE",
+                "VENTA",
+                "ANTIGUEDAD ANOS",
+                "GARANTIA ESTADO",
                 "MATRICULA",
                 "NOMBRE CLIENTE",
                 "MARCA",
@@ -483,9 +640,14 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "PIEZAS PERDIDAS",
                 "PIEZAS PENDIENTES",
                 "PIEZAS SIN PROVEEDOR",
+                "PIEZAS SIN STOCK",
+                "PIEZAS MUY CARAS",
+                "DIAS ESPERA STOCK",
+                "SEMAFORO STOCK",
                 "PIEZAS ENTREGADAS",
                 "PIEZAS SIN ENTREGAR",
                 "ESPERANDO REPUESTOS",
+                "MOTIVOS DETECTADOS",
                 "LISTA REPUESTOS",
                 "MAGNA ADJUDICADO",
             ]
@@ -494,11 +656,14 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
     grouped = df.groupby("VEHICULO_ID", dropna=False, sort=False)
     summary = grouped.agg(
         FECHA=("FECHA", "min"),
+        CANAL=("CANAL", first_non_empty),
         DIAS_DECLARADOS=("DIAS EN TALLER", "max"),
         COMPANIA=("COMPANIA", first_non_empty),
         NRO_SINIESTRO=("NRO SINIESTRO", first_non_empty),
         PROVEEDOR=("PROVEEDOR", vehicle_provider_label),
         CHASIS=("CHASIS", first_non_empty),
+        KILOMETRAJE=("KILOMETRAJE", "max"),
+        VENTA=("VENTA", "min"),
         MATRICULA=("MATRICULA", first_non_empty),
         NOMBRE_CLIENTE=("NOMBRE CLIENTE", first_non_empty),
         MARCA=("MARCA", first_non_empty),
@@ -509,7 +674,10 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
         PIEZAS_PERDIDAS=("PIEZA_RESULTADO", lambda series: int(sum(value == "PERDIDA" for value in series))),
         PIEZAS_PENDIENTES=("PIEZA_RESULTADO", lambda series: int(sum(value == "SIN PROVEEDOR" for value in series))),
         PIEZAS_SIN_PROVEEDOR=("PROVEEDOR", lambda series: int(sum(not normalize_text(value) for value in series))),
+        PIEZAS_SIN_STOCK=("MOTIVO_NORMALIZADO", lambda series: int(sum(value == "NO HAY STOCK" for value in series))),
+        PIEZAS_MUY_CARAS=("MOTIVO_NORMALIZADO", lambda series: int(sum(value == "MUY CARO Y HAY STOCK" for value in series))),
         PIEZAS_ENTREGADAS=("PIEZA_ENTREGADA", "sum"),
+        MOTIVOS_DETECTADOS=("MOTIVO_NORMALIZADO", unique_join),
         LISTA_REPUESTOS=("REPUESTOS SOLICITADO", unique_join),
         MAGNA_ADJUDICADO=("MAGNA_ADJUDICADO", "max"),
     ).reset_index()
@@ -519,6 +687,11 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
     fallback_days = fallback_days.where(fallback_days >= 0)
     summary["DIAS EFECTIVOS"] = summary["DIAS_DECLARADOS"].where(summary["DIAS_DECLARADOS"].notna(), fallback_days)
     summary["DIAS EFECTIVOS"] = pd.to_numeric(summary["DIAS EFECTIVOS"], errors="coerce")
+    summary["ANTIGUEDAD ANOS"] = ((pd.Timestamp(date.today()) - summary["VENTA"]).dt.days / 365.25).round(1)
+    summary["GARANTIA ESTADO"] = summary.apply(
+        lambda row: classify_warranty_status(row.get("CANAL"), row.get("KILOMETRAJE"), row.get("VENTA")),
+        axis=1,
+    )
     summary["PIEZAS SIN ENTREGAR"] = summary["PIEZAS_SOLICITADAS"] - summary["PIEZAS_ENTREGADAS"]
     status_slug = summary["STATUS_DEL_VEHICULO"].apply(slug_text)
     summary["ESPERANDO REPUESTOS"] = (
@@ -526,6 +699,14 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
         | (status_slug.eq("EN TALLER") & summary["PIEZAS SIN ENTREGAR"].gt(0))
     )
     summary["SEMAFORO TALLER"] = summary["DIAS EFECTIVOS"].apply(classify_semaforo)
+
+    stock_wait_by_vehicle = (
+        df[df["MOTIVO_NORMALIZADO"] == "NO HAY STOCK"]
+        .groupby("VEHICULO_ID", dropna=False)["DIAS EFECTIVOS PIEZA"]
+        .max()
+    )
+    summary["DIAS ESPERA STOCK"] = summary["VEHICULO_ID"].map(stock_wait_by_vehicle)
+    summary["SEMAFORO STOCK"] = summary["DIAS ESPERA STOCK"].apply(classify_stock_wait)
     return summary
 
 
@@ -578,6 +759,106 @@ def semaforo_summary(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
     )
     data["SEMAFORO"] = pd.Categorical(data["SEMAFORO"], categories=SEMAFORO_ORDER, ordered=True)
     return data.sort_values("SEMAFORO")
+
+
+def warranty_status_summary(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
+    if vehicle_summary.empty:
+        return pd.DataFrame(columns=["GARANTIA ESTADO", "VEHICULOS"])
+    data = (
+        vehicle_summary.groupby("GARANTIA ESTADO", dropna=False)
+        .agg(VEHICULOS=("VEHICULO_ID", "count"))
+        .reset_index()
+    )
+    data["GARANTIA ESTADO"] = pd.Categorical(data["GARANTIA ESTADO"], categories=WARRANTY_STATUS_ORDER, ordered=True)
+    return data.sort_values("GARANTIA ESTADO")
+
+
+def motivo_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["MOTIVO", "PIEZAS"])
+    data = (
+        df.groupby("MOTIVO_NORMALIZADO", dropna=False)
+        .agg(PIEZAS=("REPUESTOS SOLICITADO", count_non_empty))
+        .reset_index()
+        .rename(columns={"MOTIVO_NORMALIZADO": "MOTIVO"})
+    )
+    ordered = MOTIVO_PARTICULAR_ORDER + sorted([m for m in data["MOTIVO"].tolist() if m not in MOTIVO_PARTICULAR_ORDER])
+    data["MOTIVO"] = pd.Categorical(data["MOTIVO"], categories=ordered, ordered=True)
+    return data.sort_values("MOTIVO")
+
+
+def stock_wait_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["SEMAFORO STOCK", "PIEZAS"])
+    stock_df = df[df["MOTIVO_NORMALIZADO"] == "NO HAY STOCK"].copy()
+    if stock_df.empty:
+        return pd.DataFrame(columns=["SEMAFORO STOCK", "PIEZAS"])
+    data = (
+        stock_df.groupby("SEMAFORO_STOCK_PIEZA", dropna=False)
+        .agg(PIEZAS=("REPUESTOS SOLICITADO", count_non_empty))
+        .reset_index()
+        .rename(columns={"SEMAFORO_STOCK_PIEZA": "SEMAFORO STOCK"})
+    )
+    data["SEMAFORO STOCK"] = pd.Categorical(data["SEMAFORO STOCK"], categories=STOCK_WAIT_ORDER, ordered=True)
+    return data.sort_values("SEMAFORO STOCK")
+
+
+def top_no_stock_wait(df: pd.DataFrame, max_rows: int = 15) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "CLIENTE",
+                "CANAL",
+                "CHASIS",
+                "MATRICULA",
+                "MARCA",
+                "MODELO",
+                "PROVEEDOR",
+                "REPUESTO",
+                "DIAS ESPERA",
+                "SEMAFORO STOCK",
+                "STATUS DEL VEHICULO",
+            ]
+        )
+    stock_df = df[df["MOTIVO_NORMALIZADO"] == "NO HAY STOCK"].copy()
+    if stock_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "CLIENTE",
+                "CANAL",
+                "CHASIS",
+                "MATRICULA",
+                "MARCA",
+                "MODELO",
+                "PROVEEDOR",
+                "REPUESTO",
+                "DIAS ESPERA",
+                "SEMAFORO STOCK",
+                "STATUS DEL VEHICULO",
+            ]
+        )
+    stock_df["CLIENTE"] = stock_df["NOMBRE CLIENTE"]
+    stock_df["CANAL"] = stock_df["CANAL"]
+    stock_df["REPUESTO"] = stock_df["REPUESTOS SOLICITADO"]
+    stock_df["DIAS ESPERA"] = stock_df["DIAS EFECTIVOS PIEZA"]
+    stock_df["SEMAFORO STOCK"] = stock_df["SEMAFORO_STOCK_PIEZA"]
+    stock_df["PROVEEDOR"] = stock_df["PROVEEDOR_DISPLAY"]
+    stock_df["STATUS DEL VEHICULO"] = stock_df["STATUS DEL VEHICULO"]
+    return stock_df.sort_values(["DIAS ESPERA", "CLIENTE"], ascending=[False, True])[
+        [
+            "CLIENTE",
+            "CANAL",
+            "CHASIS",
+            "MATRICULA",
+            "MARCA",
+            "MODELO",
+            "PROVEEDOR",
+            "REPUESTO",
+            "DIAS ESPERA",
+            "SEMAFORO STOCK",
+            "STATUS DEL VEHICULO",
+        ]
+    ].head(max_rows)
 
 
 def brand_or_model_summary(vehicle_summary: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -882,42 +1163,16 @@ def build_executive_sheet(
     write_meta_block(ws, 15, 1, "Contexto del reporte", report_meta["context_rows"], "0F766E")
     write_meta_block(ws, 15, 7, "Filtros aplicados", report_meta["filter_rows"], "1D4ED8")
 
-    add_bar_chart(
-        ws,
-        workbook[source_sheet_names["piece_result"]],
-        "Resultado de piezas",
-        1,
-        2,
-        "A24",
-        "0F766E",
-    )
-    add_bar_chart(
-        ws,
-        workbook[source_sheet_names["status"]],
-        "Vehiculos por estado",
-        1,
-        2,
-        "G24",
-        "1D4ED8",
-    )
-    add_bar_chart(
-        ws,
-        workbook[source_sheet_names["semaforo"]],
-        "Semaforo de demora",
-        1,
-        2,
-        "A39",
-        "B45309",
-    )
-    add_bar_chart(
-        ws,
-        workbook[source_sheet_names["brand"]],
-        report_meta["brand_chart_title"],
-        1,
-        2,
-        "G39",
-        "0F172A",
-    )
+    for chart_cfg in report_meta["chart_configs"]:
+        add_bar_chart(
+            ws,
+            workbook[source_sheet_names[chart_cfg["key"]]],
+            chart_cfg["title"],
+            1,
+            2,
+            chart_cfg["anchor"],
+            chart_cfg["color"],
+        )
 
     ws.merge_cells("A54:L55")
     ws["A54"] = (
@@ -932,33 +1187,26 @@ def dataframe_to_excel_bytes(
     vehicle_summary_df: pd.DataFrame,
     repuestos_df: pd.DataFrame,
     provider_df: pd.DataFrame,
-    piece_result_df: pd.DataFrame,
-    semaforo_df: pd.DataFrame,
-    status_df: pd.DataFrame,
-    brand_df: pd.DataFrame,
     delay_df: pd.DataFrame,
     report_meta: dict[str, object],
+    chart_tables: list[dict[str, object]],
 ) -> bytes:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         write_dataframe_sheet(writer, vehicle_summary_df, "Vehiculos", "0F766E")
         write_dataframe_sheet(writer, repuestos_df, "Repuestos", "0F172A")
         write_dataframe_sheet(writer, provider_df, "Proveedores", "2563EB")
-        write_dataframe_sheet(writer, piece_result_df, "Resultado piezas", "0F766E")
-        write_dataframe_sheet(writer, status_df, "Estados vehiculo", "1D4ED8")
-        write_dataframe_sheet(writer, semaforo_df, "Semaforo taller", "B45309")
-        write_dataframe_sheet(writer, brand_df, "Marca modelo", "0F172A")
         write_dataframe_sheet(writer, delay_df, "Demoras", "DC2626")
+
+        chart_sheet_names: dict[str, str] = {}
+        for chart_cfg in chart_tables:
+            write_dataframe_sheet(writer, chart_cfg["df"], chart_cfg["sheet_name"], chart_cfg["accent_color"])
+            chart_sheet_names[chart_cfg["key"]] = chart_cfg["sheet_name"]
 
         build_executive_sheet(
             writer.book,
             report_meta,
-            {
-                "piece_result": "Resultado piezas",
-                "status": "Estados vehiculo",
-                "semaforo": "Semaforo taller",
-                "brand": "Marca modelo",
-            },
+            chart_sheet_names,
         )
     return buffer.getvalue()
 
@@ -993,7 +1241,7 @@ st.markdown(
     """
     <div class="title-card">
         <h1>Dashboard <span>Taller Magna</span></h1>
-        <p>Resumen ejecutivo de piezas ganadas, perdidas, sin proveedor asignado y demoras por falta de repuestos.</p>
+        <p>Resumen ejecutivo de siniestros, garantias, motivos del cliente y demoras por falta de repuestos.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1020,11 +1268,20 @@ selected_sheet = st.sidebar.selectbox(
     "Hoja a analizar",
     valid_sheets,
     index=valid_sheets.index(default_sheet),
-    help="La hoja SINIESTROS suele ser la mejor referencia para revisar piezas ganadas, perdidas y demoras del taller.",
+    help="SINIESTROS sirve para siniestros y adjudicaciones. PARTICULAR Y GARANTIAS sirve para garantia, motivos y esperas sin stock.",
 )
 
 raw_df = ensure_analysis_columns(workbook_data[selected_sheet].copy())
 vehicle_summary_df = build_vehicle_summary(raw_df)
+is_particular_mode = slug_text(selected_sheet) == "PARTICULAR Y GARANTIAS"
+semaforo_filter_column = "SEMAFORO STOCK" if is_particular_mode else "SEMAFORO TALLER"
+semaforo_filter_label = "Semaforo de espera sin stock" if is_particular_mode else "Semaforo de demora"
+semaforo_filter_order = STOCK_WAIT_ORDER if is_particular_mode else SEMAFORO_ORDER
+waiting_filter_label = (
+    "Solo vehiculos con piezas sin stock"
+    if is_particular_mode
+    else "Solo vehiculos esperando repuestos"
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Filtros")
@@ -1032,14 +1289,16 @@ st.sidebar.subheader("Filtros")
 brand_options = sorted([value for value in vehicle_summary_df["MARCA"].dropna().unique().tolist() if value])
 status_options = sorted([value for value in vehicle_summary_df["STATUS_DEL_VEHICULO"].dropna().unique().tolist() if value])
 provider_options = sorted([value for value in raw_df["PROVEEDOR_DISPLAY"].dropna().unique().tolist() if value])
-semaforo_options = [value for value in SEMAFORO_ORDER if value in vehicle_summary_df["SEMAFORO TALLER"].astype(str).tolist()]
+semaforo_options = [
+    value for value in semaforo_filter_order if value in vehicle_summary_df[semaforo_filter_column].astype(str).tolist()
+]
 
 selected_brands = st.sidebar.multiselect("Marca", brand_options, default=brand_options)
 selected_status = st.sidebar.multiselect("Estado del vehiculo", status_options, default=status_options)
 selected_providers = st.sidebar.multiselect("Proveedor", provider_options, default=provider_options)
-selected_semaforo = st.sidebar.multiselect("Semaforo de demora", semaforo_options, default=semaforo_options)
-only_waiting_parts = st.sidebar.checkbox("Solo vehiculos esperando repuestos", value=False)
-only_magna = st.sidebar.checkbox("Solo piezas ganadas por MAGNA", value=False)
+selected_semaforo = st.sidebar.multiselect(semaforo_filter_label, semaforo_options, default=semaforo_options)
+only_waiting_parts = st.sidebar.checkbox(waiting_filter_label, value=False)
+only_magna = st.sidebar.checkbox("Solo proveedor MAGNA" if is_particular_mode else "Solo piezas ganadas por MAGNA", value=False)
 search_text = st.sidebar.text_input("Buscar cliente, chasis, matricula o repuesto")
 
 vehicle_mask = pd.Series(True, index=vehicle_summary_df.index)
@@ -1048,9 +1307,13 @@ if brand_options:
 if status_options:
     vehicle_mask &= vehicle_summary_df["STATUS_DEL_VEHICULO"].isin(selected_status)
 if selected_semaforo:
-    vehicle_mask &= vehicle_summary_df["SEMAFORO TALLER"].isin(selected_semaforo)
+    vehicle_mask &= vehicle_summary_df[semaforo_filter_column].isin(selected_semaforo)
 if only_waiting_parts:
-    vehicle_mask &= vehicle_summary_df["ESPERANDO REPUESTOS"]
+    vehicle_mask &= (
+        vehicle_summary_df["PIEZAS_SIN_STOCK"].gt(0)
+        if is_particular_mode
+        else vehicle_summary_df["ESPERANDO REPUESTOS"]
+    )
 vehicle_mask &= build_search_mask(vehicle_summary_df, search_text)
 
 filtered_vehicle_summary = vehicle_summary_df.loc[vehicle_mask].copy()
@@ -1065,7 +1328,19 @@ if only_magna:
 allowed_vehicle_ids = filtered_df["VEHICULO_ID"].dropna().unique().tolist()
 filtered_vehicle_summary = filtered_vehicle_summary[filtered_vehicle_summary["VEHICULO_ID"].isin(allowed_vehicle_ids)].copy()
 
-if selected_sheet != "SINIESTROS":
+if is_particular_mode:
+    st.info(
+        "En PARTICULAR Y GARANTIAS el analisis prioriza garantia por kilometraje y fecha de venta, motivos del cliente y espera por falta de stock."
+    )
+    if (
+        raw_df["KILOMETRAJE"].dropna().empty
+        or raw_df["VENTA"].dropna().empty
+        or raw_df["MOTIVO"].apply(normalize_text).eq("").all()
+    ):
+        st.warning(
+            "Faltan datos en KILOMETRAJE, VENTA o MOTIVO. Cuando esas columnas no estan cargadas, la garantia queda en revision y el motivo se muestra como SIN MOTIVO."
+        )
+elif selected_sheet != "SINIESTROS":
     st.info(
         "Estas viendo una hoja distinta a SINIESTROS. Para revisar piezas ganadas y perdidas por MAGNA, la referencia mas util suele ser SINIESTROS."
     )
@@ -1084,6 +1359,25 @@ delivered_pieces = int(filtered_df["PIEZA_ENTREGADA"].sum())
 
 effectiveness = (won_pieces / (won_pieces + lost_pieces) * 100) if (won_pieces + lost_pieces) else 0
 
+warranty_df = warranty_status_summary(filtered_vehicle_summary)
+motivo_df = motivo_summary(filtered_df)
+stock_wait_df = stock_wait_summary(filtered_df)
+no_stock_delay_df = top_no_stock_wait(filtered_df)
+
+garantia_vigente = int(filtered_vehicle_summary["GARANTIA ESTADO"].eq("GARANTIA VIGENTE").sum())
+garantia_no_aplica = int(filtered_vehicle_summary["GARANTIA ESTADO"].astype(str).str.startswith("SIN GARANTIA").sum())
+garantia_revisar = int(filtered_vehicle_summary["GARANTIA ESTADO"].astype(str).str.startswith("REVISAR").sum())
+garantia_km_out = int(filtered_vehicle_summary["GARANTIA ESTADO"].astype(str).str.contains(">100.000 KM", regex=False).sum())
+garantia_age_out = int(filtered_vehicle_summary["GARANTIA ESTADO"].astype(str).str.contains(">3 ANOS", regex=False).sum())
+pieces_no_stock = int((filtered_df["MOTIVO_NORMALIZADO"] == "NO HAY STOCK").sum())
+pieces_expensive_stock = int((filtered_df["MOTIVO_NORMALIZADO"] == "MUY CARO Y HAY STOCK").sum())
+critical_stock_pieces = int((filtered_df["SEMAFORO_STOCK_PIEZA"] == ">55 DIAS - CRITICA").sum())
+avg_stock_wait = (
+    float(filtered_df.loc[filtered_df["MOTIVO_NORMALIZADO"] == "NO HAY STOCK", "DIAS EFECTIVOS PIEZA"].dropna().mean())
+    if pieces_no_stock
+    else 0
+)
+
 hero_message = (
     f"Archivo activo: <strong>{active_file_name}</strong> | Hoja: <strong>{selected_sheet}</strong> | "
     f"Vehiculos analizados: <strong>{total_vehicles}</strong> | Piezas analizadas: <strong>{total_pieces}</strong>"
@@ -1098,328 +1392,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if critical_vehicles > 0:
+if is_particular_mode and critical_stock_pieces > 0:
     st.markdown(
         f"""
         <div class="status-alert">
-            Hay {critical_vehicles} vehiculos en situacion critica (71 dias o mas). Conviene revisarlos primero.
+            Hay {critical_stock_pieces} piezas sin stock en situacion critica. Si superan 55 dias conviene cambiar de proveedor u otra solucion.
         </div>
         """,
         unsafe_allow_html=True,
     )
-elif vehicles_waiting_parts > 0:
+elif is_particular_mode and garantia_revisar > 0:
     st.markdown(
         f"""
         <div class="status-mid">
-            Hay {vehicles_waiting_parts} vehiculos esperando repuestos. Revisa la pestana de demoras para priorizar.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        """
-        <div class="status-good">
-            No se detectan vehiculos esperando repuestos con los filtros actuales.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-piece_result_df = pieces_result_summary(filtered_df)
-provider_df = provider_summary(filtered_df)
-status_df = status_summary(filtered_vehicle_summary)
-semaforo_df = semaforo_summary(filtered_vehicle_summary)
-brand_df, brand_label = brand_or_model_summary(filtered_vehicle_summary)
-delay_top_df = top_vehicles_by_delay(filtered_vehicle_summary).head(15)
-
-tabs = st.tabs(
-    [
-        "Resumen ejecutivo",
-        "Piezas ganadas / perdidas",
-        "Demoras en taller",
-        "Detalle vehiculos",
-        "Detalle repuestos",
-    ]
-)
-
-with tabs[0]:
-    metric_cols_top = st.columns(4)
-    with metric_cols_top[0]:
-        metric_card("Vehiculos analizados", total_vehicles, "Vehiculos incluidos despues de aplicar filtros.")
-    with metric_cols_top[1]:
-        metric_card("Vehiculos en taller", vehicles_in_shop, "Vehiculos cuyo estado actual figura como EN TALLER.")
-    with metric_cols_top[2]:
-        metric_card("Esperando repuestos", vehicles_waiting_parts, "Vehiculos frenados por repuestos sin entregar.")
-    with metric_cols_top[3]:
-        metric_card("Dias promedio en taller", f"{avg_days:.0f}", "Usa DIAS EN TALLER o lo estima desde FECHA si esta vacio.")
-
-    metric_cols_bottom = st.columns(4)
-    with metric_cols_bottom[0]:
-        metric_card("Piezas ganadas MAGNA", won_pieces, "Piezas con proveedor adjudicado igual a MAGNA.")
-    with metric_cols_bottom[1]:
-        metric_card("Piezas perdidas", lost_pieces, "Piezas adjudicadas a otros proveedores.")
-    with metric_cols_bottom[2]:
-        metric_card("Piezas sin proveedor", pending_pieces, "Filas donde la columna Proveedor esta vacia.")
-    with metric_cols_bottom[3]:
-        metric_card("% efectividad", f"{effectiveness:.1f}%", "Ganadas sobre ganadas + perdidas.")
-
-    chart_col_1, chart_col_2 = st.columns(2)
-    with chart_col_1:
-        horizontal_bar(piece_result_df, "RESULTADO", "PIEZAS", "Resultado de piezas", "#0f766e")
-    with chart_col_2:
-        horizontal_bar(status_df, "STATUS DEL VEHICULO", "VEHICULOS", "Vehiculos por estado", "#1d4ed8")
-
-    chart_col_3, chart_col_4 = st.columns(2)
-    with chart_col_3:
-        horizontal_bar(semaforo_df, "SEMAFORO", "VEHICULOS", "Semaforo de demora", "#b45309")
-    with chart_col_4:
-        horizontal_bar(brand_df, "CATEGORIA", "VEHICULOS", f"Vehiculos por {brand_label.lower()}", "#0f172a")
-
-with tabs[1]:
-    st.markdown('<div class="tab-note">En esta pestaña se ve el resultado comercial basico por pieza: ganada por MAGNA, perdida o pendiente.</div>', unsafe_allow_html=True)
-
-    metric_cols = st.columns(4)
-    with metric_cols[0]:
-        metric_card("Piezas analizadas", total_pieces, "Total de repuestos dentro de los filtros actuales.")
-    with metric_cols[1]:
-        metric_card("Ganadas MAGNA", won_pieces, "Piezas adjudicadas a MAGNA.")
-    with metric_cols[2]:
-        metric_card("Perdidas", lost_pieces, "Piezas adjudicadas a otros proveedores.")
-    with metric_cols[3]:
-        metric_card("Sin proveedor", pending_pieces, "Piezas con la columna Proveedor vacia.")
-
-    chart_col_1, chart_col_2 = st.columns(2)
-    with chart_col_1:
-        horizontal_bar(piece_result_df, "RESULTADO", "PIEZAS", "Piezas ganadas, perdidas y sin proveedor", "#0f766e")
-    with chart_col_2:
-        horizontal_bar(provider_df.head(10), "PROVEEDOR", "PIEZAS", "Top proveedores por piezas", "#2563eb")
-
-with tabs[2]:
-    st.markdown('<div class="tab-note">La demora se clasifica asi: 0 a 30 normal, 31 a 45 atencion, 46 a 70 demora alta, 71 o mas critica.</div>', unsafe_allow_html=True)
-
-    metric_cols = st.columns(4)
-    with metric_cols[0]:
-        metric_card("Normal", int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("NORMAL").sum()), "0 a 30 dias.")
-    with metric_cols[1]:
-        metric_card("Atencion", int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("ATENCION").sum()), "31 a 45 dias.")
-    with metric_cols[2]:
-        metric_card("Demora alta", int(filtered_vehicle_summary["SEMAFORO TALLER"].eq("DEMORA ALTA").sum()), "46 a 70 dias.")
-    with metric_cols[3]:
-        metric_card("Critica", critical_vehicles, "71 dias o mas.")
-
-    chart_col_1, chart_col_2 = st.columns(2)
-    with chart_col_1:
-        horizontal_bar(semaforo_df, "SEMAFORO", "VEHICULOS", "Vehiculos por semaforo", "#dc2626")
-    with chart_col_2:
-        waiting_df = filtered_vehicle_summary[filtered_vehicle_summary["ESPERANDO REPUESTOS"]].copy()
-        waiting_semaforo_df = semaforo_summary(waiting_df)
-        horizontal_bar(waiting_semaforo_df, "SEMAFORO", "VEHICULOS", "Esperando repuestos por semaforo", "#ea580c")
-
-    st.subheader("Vehiculos mas demorados")
-    delay_display = delay_top_df.rename(
-        columns={
-            "DIAS EFECTIVOS": "DIAS EN TALLER",
-            "SEMAFORO TALLER": "SEMAFORO",
-            "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
-            "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
-        }
-    )
-    st.dataframe(delay_display, use_container_width=True, hide_index=True)
-
-vehicle_display = filtered_vehicle_summary.copy()
-vehicle_display["FECHA"] = vehicle_display["FECHA"].apply(format_date)
-vehicle_display["MAGNA ADJUDICADO"] = vehicle_display["MAGNA_ADJUDICADO"].map({True: "SI", False: "NO"})
-vehicle_display["ESPERANDO REPUESTOS"] = vehicle_display["ESPERANDO REPUESTOS"].map({True: "SI", False: "NO"})
-vehicle_display = vehicle_display.rename(
-    columns={
-        "DIAS_DECLARADOS": "DIAS EN TALLER CARGADOS",
-        "DIAS EFECTIVOS": "DIAS EN TALLER",
-        "NRO_SINIESTRO": "NRO SINIESTRO",
-        "NOMBRE_CLIENTE": "NOMBRE CLIENTE",
-        "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
-        "PIEZAS_SOLICITADAS": "PIEZAS SOLICITADAS",
-        "PIEZAS_GANADAS": "PIEZAS GANADAS",
-        "PIEZAS_PERDIDAS": "PIEZAS PERDIDAS",
-        "PIEZAS_PENDIENTES": "PIEZAS PENDIENTES",
-        "PIEZAS_SIN_PROVEEDOR": "PIEZAS SIN PROVEEDOR",
-        "PIEZAS_ENTREGADAS": "PIEZAS ENTREGADAS",
-        "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
-        "SEMAFORO TALLER": "SEMAFORO",
-        "LISTA_REPUESTOS": "LISTA REPUESTOS",
-    }
-)
-summary_export = vehicle_display[
-    [
-        "FECHA",
-        "COMPANIA",
-        "NRO SINIESTRO",
-        "PROVEEDOR",
-        "MAGNA ADJUDICADO",
-        "CHASIS",
-        "MATRICULA",
-        "NOMBRE CLIENTE",
-        "MARCA",
-        "MODELO",
-        "STATUS DEL VEHICULO",
-        "ESPERANDO REPUESTOS",
-        "SEMAFORO",
-        "DIAS EN TALLER CARGADOS",
-        "DIAS EN TALLER",
-        "PIEZAS SOLICITADAS",
-        "PIEZAS GANADAS",
-        "PIEZAS PERDIDAS",
-        "PIEZAS PENDIENTES",
-        "PIEZAS SIN PROVEEDOR",
-        "PIEZAS ENTREGADAS",
-        "PIEZAS SIN ENTREGAR",
-        "LISTA REPUESTOS",
-    ]
-].copy()
-
-repuestos_display = filtered_df.copy()
-repuestos_display["FECHA"] = repuestos_display["FECHA"].apply(format_date)
-repuestos_display["FECHA ENTREGA PIEZA"] = repuestos_display["FECHA ENTREGA PIEZA"].apply(format_date)
-repuestos_display["MAGNA ADJUDICADO"] = repuestos_display["MAGNA_ADJUDICADO"].map({True: "SI", False: "NO"})
-repuestos_display["PROVEEDOR"] = repuestos_display["PROVEEDOR_DISPLAY"]
-repuestos_display = repuestos_display.rename(columns={"PIEZA_RESULTADO": "RESULTADO PIEZA"})
-repuestos_export = repuestos_display[
-    [
-        "FECHA",
-        "COMPANIA",
-        "NRO SINIESTRO",
-        "PROVEEDOR",
-        "MAGNA ADJUDICADO",
-        "RESULTADO PIEZA",
-        "CHASIS",
-        "MATRICULA",
-        "NOMBRE CLIENTE",
-        "MARCA",
-        "MODELO",
-        "CODIGO",
-        "REPUESTOS SOLICITADO",
-        "STATUS DEL REPUESTO",
-        "STATUS DEL VEHICULO",
-        "FECHA ENTREGA PIEZA",
-        "COMENTARIOS",
-    ]
-].copy()
-
-delay_export = delay_top_df.rename(
-    columns={
-        "DIAS EFECTIVOS": "DIAS EN TALLER",
-        "SEMAFORO TALLER": "SEMAFORO",
-        "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
-        "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
-    }
-).copy()
-
-report_meta = {
-    "archivo": active_file_name,
-    "hoja": selected_sheet,
-    "generado": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
-    "brand_chart_title": f"Vehiculos por {brand_label.lower()}",
-    "context_rows": [
-        ("Vehiculos analizados", str(total_vehicles)),
-        ("Piezas analizadas", str(total_pieces)),
-        ("Piezas ganadas MAGNA", str(won_pieces)),
-        ("Piezas perdidas", str(lost_pieces)),
-        ("Piezas sin proveedor", str(pending_pieces)),
-        ("Efectividad", f"{effectiveness:.1f}%"),
-    ],
-    "filter_rows": [
-        ("Marca", ", ".join(selected_brands) if selected_brands else "Todas"),
-        ("Estado vehiculo", ", ".join(selected_status) if selected_status else "Todos"),
-        ("Proveedor", ", ".join(selected_providers) if selected_providers else "Todos"),
-        ("Semaforo", ", ".join(selected_semaforo) if selected_semaforo else "Todos"),
-        ("Solo esperando repuestos", "SI" if only_waiting_parts else "NO"),
-        ("Solo piezas ganadas MAGNA", "SI" if only_magna else "NO"),
-        ("Busqueda", search_text if search_text else "Sin texto"),
-    ],
-    "kpis": [
-        {
-            "title": "Vehiculos analizados",
-            "value": total_vehicles,
-            "subtitle": "Vehiculos incluidos despues de aplicar filtros.",
-            "color": "0F766E",
-        },
-        {
-            "title": "Vehiculos en taller",
-            "value": vehicles_in_shop,
-            "subtitle": "Estado actual EN TALLER.",
-            "color": "1D4ED8",
-        },
-        {
-            "title": "Esperando repuestos",
-            "value": vehicles_waiting_parts,
-            "subtitle": "Vehiculos frenados por piezas sin entregar.",
-            "color": "B45309",
-        },
-        {
-            "title": "Dias promedio",
-            "value": f"{avg_days:.0f}",
-            "subtitle": "Promedio usando dias cargados o estimados.",
-            "color": "0F172A",
-        },
-        {
-            "title": "Piezas ganadas MAGNA",
-            "value": won_pieces,
-            "subtitle": "Proveedor adjudicado igual a MAGNA.",
-            "color": "0F766E",
-        },
-        {
-            "title": "Piezas perdidas",
-            "value": lost_pieces,
-            "subtitle": "Adjudicadas a otros proveedores.",
-            "color": "1D4ED8",
-        },
-        {
-            "title": "Piezas sin proveedor",
-            "value": pending_pieces,
-            "subtitle": "Filas donde la columna Proveedor esta vacia.",
-            "color": "B45309",
-        },
-        {
-            "title": "Efectividad",
-            "value": f"{effectiveness:.1f}%",
-            "subtitle": "Ganadas sobre ganadas + perdidas.",
-            "color": "0F172A",
-        },
-    ],
-}
-
-download_bytes = dataframe_to_excel_bytes(
-    summary_export,
-    repuestos_export,
-    provider_df,
-    piece_result_df,
-    semaforo_df,
-    status_df,
-    brand_df,
-    delay_export,
-    report_meta,
-)
-
-with tabs[3]:
-    st.subheader("Detalle por vehiculo")
-    st.dataframe(
-        summary_export.sort_values(["SEMAFORO", "DIAS EN TALLER"], ascending=[True, False]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-with tabs[4]:
-    st.subheader("Detalle de repuestos")
-    st.dataframe(
-        repuestos_export.sort_values(["PROVEEDOR", "CHASIS", "REPUESTOS SOLICITADO"], ascending=[True, True, True]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-st.download_button(
-    "Descargar reporte ejecutivo en Excel",
-    data=download_bytes,
-    file_name=f"resumen_taller_magna_{selected_sheet.lower().replace(' ', '_')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    use_container_width=True,
-)
+            Hay {garantia_revisar} vehiculos con garantia a revisar por 
