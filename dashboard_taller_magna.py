@@ -10,6 +10,11 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 import streamlit as st
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 st.set_page_config(
@@ -630,20 +635,305 @@ def horizontal_bar(
     st.altair_chart(chart, use_container_width=True)
 
 
+def excel_table_name(base: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", base.title())
+    if not cleaned:
+        cleaned = "Tabla"
+    if cleaned[0].isdigit():
+        cleaned = f"T{cleaned}"
+    return cleaned[:25]
+
+
+def autosize_worksheet(ws, max_width: int = 42) -> None:
+    for column_cells in ws.columns:
+        column_letter = get_column_letter(column_cells[0].column)
+        max_length = 0
+        for cell in column_cells:
+            value = "" if cell.value is None else str(cell.value)
+            max_length = max(max_length, len(value))
+        ws.column_dimensions[column_letter].width = min(max(max_length + 2, 12), max_width)
+
+
+def style_data_sheet(ws, table_name: str, accent_color: str) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    header_fill = PatternFill("solid", fgColor=accent_color)
+    header_font = Font(color="FFFFFF", bold=True)
+    body_border = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = body_border
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = body_border
+
+    if ws.max_row >= 2 and ws.max_column >= 1:
+        ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+        table = Table(displayName=table_name, ref=ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(table)
+
+    autosize_worksheet(ws)
+
+
+def write_dataframe_sheet(writer: pd.ExcelWriter, df: pd.DataFrame, sheet_name: str, accent_color: str) -> None:
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    ws = writer.book[sheet_name]
+    style_data_sheet(ws, excel_table_name(sheet_name), accent_color)
+
+
+def draw_kpi_box(
+    ws,
+    start_row: int,
+    start_col: int,
+    title: str,
+    value: object,
+    subtitle: str,
+    fill_color: str,
+) -> None:
+    end_col = start_col + 2
+    border = Border(
+        left=Side(style="thin", color="D6DEE8"),
+        right=Side(style="thin", color="D6DEE8"),
+        top=Side(style="thin", color="D6DEE8"),
+        bottom=Side(style="thin", color="D6DEE8"),
+    )
+    fill = PatternFill("solid", fgColor=fill_color)
+
+    ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
+    ws.merge_cells(start_row=start_row + 1, start_column=start_col, end_row=start_row + 2, end_column=end_col)
+    ws.merge_cells(start_row=start_row + 3, start_column=start_col, end_row=start_row + 3, end_column=end_col)
+
+    for row in range(start_row, start_row + 4):
+        for col in range(start_col, end_col + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.fill = fill
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ws.cell(row=start_row, column=start_col).value = title
+    ws.cell(row=start_row, column=start_col).font = Font(color="FFFFFF", bold=True, size=11)
+    ws.cell(row=start_row + 1, column=start_col).value = value
+    ws.cell(row=start_row + 1, column=start_col).font = Font(color="FFFFFF", bold=True, size=18)
+    ws.cell(row=start_row + 3, column=start_col).value = subtitle
+    ws.cell(row=start_row + 3, column=start_col).font = Font(color="E2E8F0", size=9)
+
+
+def write_meta_block(ws, start_row: int, start_col: int, title: str, rows: list[tuple[str, str]], accent_color: str) -> None:
+    end_col = start_col + 4
+    title_fill = PatternFill("solid", fgColor=accent_color)
+    body_fill = PatternFill("solid", fgColor="F8FAFC")
+    border = Border(
+        left=Side(style="thin", color="D6DEE8"),
+        right=Side(style="thin", color="D6DEE8"),
+        top=Side(style="thin", color="D6DEE8"),
+        bottom=Side(style="thin", color="D6DEE8"),
+    )
+
+    ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
+    title_cell = ws.cell(row=start_row, column=start_col)
+    title_cell.value = title
+    title_cell.fill = title_fill
+    title_cell.font = Font(color="FFFFFF", bold=True, size=11)
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    title_cell.border = border
+
+    for offset, (label, value) in enumerate(rows, start=1):
+        row = start_row + offset
+        ws.cell(row=row, column=start_col).value = label
+        ws.cell(row=row, column=start_col).font = Font(bold=True, color="0F172A")
+        ws.cell(row=row, column=start_col).fill = body_fill
+        ws.cell(row=row, column=start_col).border = border
+        ws.cell(row=row, column=start_col).alignment = Alignment(vertical="top")
+
+        ws.merge_cells(start_row=row, start_column=start_col + 1, end_row=row, end_column=end_col)
+        value_cell = ws.cell(row=row, column=start_col + 1)
+        value_cell.value = value
+        value_cell.fill = body_fill
+        value_cell.border = border
+        value_cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+
+def add_bar_chart(
+    target_ws,
+    source_ws,
+    title: str,
+    category_col: int,
+    value_col: int,
+    anchor: str,
+    color: str,
+    width: float = 10.5,
+    height: float = 6.5,
+) -> None:
+    if source_ws.max_row < 2:
+        return
+
+    chart = BarChart()
+    chart.type = "bar"
+    chart.style = 10
+    chart.title = title
+    chart.height = height
+    chart.width = width
+    chart.varyColors = False
+    chart.legend = None
+    chart.gapWidth = 45
+
+    data = Reference(source_ws, min_col=value_col, min_row=1, max_row=source_ws.max_row)
+    categories = Reference(source_ws, min_col=category_col, min_row=2, max_row=source_ws.max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.dLbls = DataLabelList()
+    chart.dLbls.showVal = True
+
+    if chart.series:
+        chart.series[0].graphicalProperties.solidFill = color
+        chart.series[0].graphicalProperties.line.solidFill = color
+
+    target_ws.add_chart(chart, anchor)
+
+
+def build_executive_sheet(
+    workbook,
+    report_meta: dict[str, object],
+    source_sheet_names: dict[str, str],
+) -> None:
+    ws = workbook.create_sheet("Reporte ejecutivo", 0)
+    ws.sheet_view.showGridLines = False
+
+    for column_letter, width in {
+        "A": 16,
+        "B": 16,
+        "C": 16,
+        "D": 16,
+        "E": 16,
+        "F": 16,
+        "G": 16,
+        "H": 16,
+        "I": 16,
+        "J": 16,
+        "K": 16,
+        "L": 16,
+    }.items():
+        ws.column_dimensions[column_letter].width = width
+
+    ws.merge_cells("A1:L2")
+    ws["A1"] = "Reporte Ejecutivo Taller Magna"
+    ws["A1"].font = Font(size=22, bold=True, color="FFFFFF")
+    ws["A1"].fill = PatternFill("solid", fgColor="0F172A")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("A3:L3")
+    ws["A3"] = (
+        f"Archivo: {report_meta['archivo']} | Hoja: {report_meta['hoja']} | "
+        f"Generado: {report_meta['generado']}"
+    )
+    ws["A3"].font = Font(size=10, color="475569")
+    ws["A3"].alignment = Alignment(horizontal="center", vertical="center")
+
+    for idx, kpi in enumerate(report_meta["kpis"][:4]):
+        draw_kpi_box(ws, 5, 1 + (idx * 3), kpi["title"], kpi["value"], kpi["subtitle"], kpi["color"])
+
+    for idx, kpi in enumerate(report_meta["kpis"][4:8]):
+        draw_kpi_box(ws, 10, 1 + (idx * 3), kpi["title"], kpi["value"], kpi["subtitle"], kpi["color"])
+
+    write_meta_block(ws, 15, 1, "Contexto del reporte", report_meta["context_rows"], "0F766E")
+    write_meta_block(ws, 15, 7, "Filtros aplicados", report_meta["filter_rows"], "1D4ED8")
+
+    add_bar_chart(
+        ws,
+        workbook[source_sheet_names["piece_result"]],
+        "Resultado de piezas",
+        1,
+        2,
+        "A24",
+        "0F766E",
+    )
+    add_bar_chart(
+        ws,
+        workbook[source_sheet_names["status"]],
+        "Vehiculos por estado",
+        1,
+        2,
+        "G24",
+        "1D4ED8",
+    )
+    add_bar_chart(
+        ws,
+        workbook[source_sheet_names["semaforo"]],
+        "Semaforo de demora",
+        1,
+        2,
+        "A39",
+        "B45309",
+    )
+    add_bar_chart(
+        ws,
+        workbook[source_sheet_names["brand"]],
+        report_meta["brand_chart_title"],
+        1,
+        2,
+        "G39",
+        "0F172A",
+    )
+
+    ws.merge_cells("A54:L55")
+    ws["A54"] = (
+        "Este archivo incluye un resumen ejecutivo con graficos y hojas de detalle para vehiculos, repuestos, "
+        "proveedores, estados y demoras. Los graficos reflejan exactamente los filtros aplicados al momento de descargar."
+    )
+    ws["A54"].font = Font(size=10, color="475569", italic=True)
+    ws["A54"].alignment = Alignment(wrap_text=True, vertical="top")
+
+
 def dataframe_to_excel_bytes(
     vehicle_summary_df: pd.DataFrame,
     repuestos_df: pd.DataFrame,
     provider_df: pd.DataFrame,
     piece_result_df: pd.DataFrame,
     semaforo_df: pd.DataFrame,
+    status_df: pd.DataFrame,
+    brand_df: pd.DataFrame,
+    delay_df: pd.DataFrame,
+    report_meta: dict[str, object],
 ) -> bytes:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        vehicle_summary_df.to_excel(writer, sheet_name="Vehiculos", index=False)
-        repuestos_df.to_excel(writer, sheet_name="Repuestos", index=False)
-        provider_df.to_excel(writer, sheet_name="Proveedores", index=False)
-        piece_result_df.to_excel(writer, sheet_name="Resultado piezas", index=False)
-        semaforo_df.to_excel(writer, sheet_name="Semaforo taller", index=False)
+        write_dataframe_sheet(writer, vehicle_summary_df, "Vehiculos", "0F766E")
+        write_dataframe_sheet(writer, repuestos_df, "Repuestos", "0F172A")
+        write_dataframe_sheet(writer, provider_df, "Proveedores", "2563EB")
+        write_dataframe_sheet(writer, piece_result_df, "Resultado piezas", "0F766E")
+        write_dataframe_sheet(writer, status_df, "Estados vehiculo", "1D4ED8")
+        write_dataframe_sheet(writer, semaforo_df, "Semaforo taller", "B45309")
+        write_dataframe_sheet(writer, brand_df, "Marca modelo", "0F172A")
+        write_dataframe_sheet(writer, delay_df, "Demoras", "DC2626")
+
+        build_executive_sheet(
+            writer.book,
+            report_meta,
+            {
+                "piece_result": "Resultado piezas",
+                "status": "Estados vehiculo",
+                "semaforo": "Semaforo taller",
+                "brand": "Marca modelo",
+            },
+        )
     return buffer.getvalue()
 
 
@@ -986,7 +1276,100 @@ repuestos_export = repuestos_display[
     ]
 ].copy()
 
-download_bytes = dataframe_to_excel_bytes(summary_export, repuestos_export, provider_df, piece_result_df, semaforo_df)
+delay_export = delay_top_df.rename(
+    columns={
+        "DIAS EFECTIVOS": "DIAS EN TALLER",
+        "SEMAFORO TALLER": "SEMAFORO",
+        "PIEZAS SIN ENTREGAR": "PIEZAS SIN ENTREGAR",
+        "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
+    }
+).copy()
+
+report_meta = {
+    "archivo": active_file_name,
+    "hoja": selected_sheet,
+    "generado": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+    "brand_chart_title": f"Vehiculos por {brand_label.lower()}",
+    "context_rows": [
+        ("Vehiculos analizados", str(total_vehicles)),
+        ("Piezas analizadas", str(total_pieces)),
+        ("Piezas ganadas MAGNA", str(won_pieces)),
+        ("Piezas perdidas", str(lost_pieces)),
+        ("Piezas pendientes", str(pending_pieces)),
+        ("Efectividad", f"{effectiveness:.1f}%"),
+    ],
+    "filter_rows": [
+        ("Marca", ", ".join(selected_brands) if selected_brands else "Todas"),
+        ("Estado vehiculo", ", ".join(selected_status) if selected_status else "Todos"),
+        ("Proveedor", ", ".join(selected_providers) if selected_providers else "Todos"),
+        ("Semaforo", ", ".join(selected_semaforo) if selected_semaforo else "Todos"),
+        ("Solo esperando repuestos", "SI" if only_waiting_parts else "NO"),
+        ("Solo piezas ganadas MAGNA", "SI" if only_magna else "NO"),
+        ("Busqueda", search_text if search_text else "Sin texto"),
+    ],
+    "kpis": [
+        {
+            "title": "Vehiculos analizados",
+            "value": total_vehicles,
+            "subtitle": "Vehiculos incluidos despues de aplicar filtros.",
+            "color": "0F766E",
+        },
+        {
+            "title": "Vehiculos en taller",
+            "value": vehicles_in_shop,
+            "subtitle": "Estado actual EN TALLER.",
+            "color": "1D4ED8",
+        },
+        {
+            "title": "Esperando repuestos",
+            "value": vehicles_waiting_parts,
+            "subtitle": "Vehiculos frenados por piezas sin entregar.",
+            "color": "B45309",
+        },
+        {
+            "title": "Dias promedio",
+            "value": f"{avg_days:.0f}",
+            "subtitle": "Promedio usando dias cargados o estimados.",
+            "color": "0F172A",
+        },
+        {
+            "title": "Piezas ganadas MAGNA",
+            "value": won_pieces,
+            "subtitle": "Proveedor adjudicado igual a MAGNA.",
+            "color": "0F766E",
+        },
+        {
+            "title": "Piezas perdidas",
+            "value": lost_pieces,
+            "subtitle": "Adjudicadas a otros proveedores.",
+            "color": "1D4ED8",
+        },
+        {
+            "title": "Piezas pendientes",
+            "value": pending_pieces,
+            "subtitle": "Todavia sin proveedor adjudicado.",
+            "color": "B45309",
+        },
+        {
+            "title": "Efectividad",
+            "value": f"{effectiveness:.1f}%",
+            "subtitle": "Ganadas sobre ganadas + perdidas.",
+            "color": "0F172A",
+        },
+    ],
+}
+
+download_bytes = dataframe_to_excel_bytes(
+    summary_export,
+    repuestos_export,
+    provider_df,
+    piece_result_df,
+    semaforo_df,
+    status_df,
+    brand_df,
+    delay_export,
+    report_meta,
+)
 
 with tabs[3]:
     st.subheader("Detalle por vehiculo")
@@ -1005,7 +1388,7 @@ with tabs[4]:
     )
 
 st.download_button(
-    "Descargar resumen en Excel",
+    "Descargar reporte ejecutivo en Excel",
     data=download_bytes,
     file_name=f"resumen_taller_magna_{selected_sheet.lower().replace(' ', '_')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
