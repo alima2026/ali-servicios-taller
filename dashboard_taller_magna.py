@@ -20,6 +20,7 @@ st.set_page_config(
 
 DEFAULT_EXCEL_PATH = Path(__file__).with_name("vehiculos_en_reparacion_magna.xlsx")
 PREFERRED_SHEETS = ["SINIESTROS", "PARTICULAR Y GARANTIAS"]
+WORKBOOK_CACHE_VERSION = "2026-04-08-01"
 
 CANONICAL_COLUMNS = [
     "FECHA",
@@ -368,6 +369,43 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    for col in CANONICAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    for col in ["PROVEEDOR", "STATUS DEL REPUESTO", "STATUS DEL VEHICULO", "CHASIS", "MATRICULA"]:
+        df[col] = df[col].apply(normalize_text)
+
+    if "VEHICULO_ID" not in df.columns:
+        chasis = df["CHASIS"].replace("", pd.NA)
+        matricula = df["MATRICULA"].replace("", pd.NA)
+        df["VEHICULO_ID"] = chasis.where(chasis.notna(), matricula)
+
+    if "PROVEEDOR_NORMALIZADO" not in df.columns:
+        df["PROVEEDOR_NORMALIZADO"] = df["PROVEEDOR"].apply(slug_text)
+
+    if "MAGNA_ADJUDICADO" not in df.columns:
+        df["MAGNA_ADJUDICADO"] = df["PROVEEDOR_NORMALIZADO"] == "MAGNA"
+
+    if "PIEZA_RESULTADO" not in df.columns:
+        df["PIEZA_RESULTADO"] = df["PROVEEDOR"].apply(classify_piece_result)
+
+    if "PIEZA_ENTREGADA" not in df.columns:
+        df["PIEZA_ENTREGADA"] = df["STATUS DEL REPUESTO"].apply(slug_text) == "ENTREGADO"
+
+    if "SOURCE_SHEET" not in df.columns:
+        df["SOURCE_SHEET"] = ""
+
+    return df
+
+
 def read_sheet_smart(file_bytes: bytes, sheet_name: str) -> pd.DataFrame:
     raw_df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     header_row = detect_header_row(raw_df)
@@ -378,7 +416,8 @@ def read_sheet_smart(file_bytes: bytes, sheet_name: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_workbook(file_bytes: bytes) -> dict[str, pd.DataFrame]:
+def load_workbook(file_bytes: bytes, cache_version: str = WORKBOOK_CACHE_VERSION) -> dict[str, pd.DataFrame]:
+    _ = cache_version
     workbook = pd.ExcelFile(BytesIO(file_bytes))
     data: dict[str, pd.DataFrame] = {}
     for sheet_name in workbook.sheet_names:
@@ -390,6 +429,8 @@ def load_workbook(file_bytes: bytes) -> dict[str, pd.DataFrame]:
 
 
 def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
+    df = ensure_analysis_columns(df)
+
     if df.empty:
         return pd.DataFrame(
             columns=[
@@ -648,7 +689,7 @@ if not file_bytes:
     st.error("No se encontro un archivo Excel para analizar.")
     st.stop()
 
-workbook_data = load_workbook(file_bytes)
+workbook_data = load_workbook(file_bytes, WORKBOOK_CACHE_VERSION)
 valid_sheets = [sheet for sheet in PREFERRED_SHEETS if sheet in workbook_data and not workbook_data[sheet].empty]
 valid_sheets += [sheet for sheet in workbook_data if sheet not in valid_sheets and not workbook_data[sheet].empty]
 
@@ -666,7 +707,7 @@ selected_sheet = st.sidebar.selectbox(
     help="La hoja SINIESTROS suele ser la mejor referencia para revisar piezas ganadas, perdidas y demoras del taller.",
 )
 
-raw_df = workbook_data[selected_sheet].copy()
+raw_df = ensure_analysis_columns(workbook_data[selected_sheet].copy())
 vehicle_summary_df = build_vehicle_summary(raw_df)
 
 st.sidebar.markdown("---")
