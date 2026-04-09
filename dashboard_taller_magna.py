@@ -25,12 +25,13 @@ st.set_page_config(
 
 DEFAULT_EXCEL_PATH = Path(__file__).with_name("vehiculos_en_reparacion_magna.xlsx")
 PREFERRED_SHEETS = ["SINIESTROS", "PARTICULAR Y GARANTIAS"]
-WORKBOOK_CACHE_VERSION = "2026-04-08-04"
+WORKBOOK_CACHE_VERSION = "2026-04-09-01"
 
 CANONICAL_COLUMNS = [
     "FECHA",
     "CANAL",
     "DIAS EN TALLER",
+    "RESPONSABLE",
     "COMPANIA",
     "NRO SINIESTRO",
     "PROVEEDOR",
@@ -58,6 +59,8 @@ COLUMN_ALIASES = {
     "CANAL": "CANAL",
     "DIAS EN TALLER": "DIAS EN TALLER",
     "DIAS TALLER": "DIAS EN TALLER",
+    "RESPONSABLE": "RESPONSABLE",
+    "ASESOR": "RESPONSABLE",
     "COMPANIA": "COMPANIA",
     "COMPANIAS": "COMPANIA",
     "N SINIESTRO": "NRO SINIESTRO",
@@ -409,6 +412,7 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "FECHA",
         "CANAL",
         "DIAS EN TALLER",
+        "RESPONSABLE",
         "COMPANIA",
         "NRO SINIESTRO",
         "CHASIS",
@@ -437,6 +441,7 @@ def clean_taller_dataframe(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         "FECHA",
         "CANAL",
         "DIAS EN TALLER",
+        "RESPONSABLE",
         "COMPANIA",
         "NRO SINIESTRO",
         "CHASIS",
@@ -528,6 +533,7 @@ def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
         "FECHA",
         "CANAL",
         "DIAS EN TALLER",
+        "RESPONSABLE",
         "COMPANIA",
         "NRO SINIESTRO",
         "CHASIS",
@@ -622,6 +628,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "DIAS EN TALLER",
                 "DIAS EFECTIVOS",
                 "SEMAFORO TALLER",
+                "RESPONSABLE",
                 "COMPANIA",
                 "NRO SINIESTRO",
                 "PROVEEDOR",
@@ -658,6 +665,7 @@ def build_vehicle_summary(df: pd.DataFrame) -> pd.DataFrame:
         FECHA=("FECHA", "min"),
         CANAL=("CANAL", first_non_empty),
         DIAS_DECLARADOS=("DIAS EN TALLER", "max"),
+        RESPONSABLE=("RESPONSABLE", first_non_empty),
         COMPANIA=("COMPANIA", first_non_empty),
         NRO_SINIESTRO=("NRO SINIESTRO", first_non_empty),
         PROVEEDOR=("PROVEEDOR", vehicle_provider_label),
@@ -883,6 +891,56 @@ def brand_or_model_summary(vehicle_summary: pd.DataFrame) -> tuple[pd.DataFrame,
     )
     data["CATEGORIA"] = data["MODELO"].replace("", "SIN MODELO")
     return data[["CATEGORIA", "VEHICULOS"]], "Modelo"
+
+
+def brand_delay_summary(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
+    if vehicle_summary.empty:
+        return pd.DataFrame(columns=["MARCA", "DIAS PROMEDIO", "VEHICULOS"])
+    data = (
+        vehicle_summary.assign(MARCA=vehicle_summary["MARCA"].replace("", "SIN MARCA"))
+        .groupby("MARCA", dropna=False)
+        .agg(
+            VEHICULOS=("VEHICULO_ID", "count"),
+            **{"DIAS PROMEDIO": ("DIAS EFECTIVOS", "mean")},
+        )
+        .reset_index()
+    )
+    data["DIAS PROMEDIO"] = data["DIAS PROMEDIO"].round(1)
+    return data.sort_values(["DIAS PROMEDIO", "VEHICULOS"], ascending=[False, False])
+
+
+def brand_status_summary(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
+    if vehicle_summary.empty:
+        return pd.DataFrame(columns=["MARCA", "STATUS DEL VEHICULO", "VEHICULOS"])
+    data = (
+        vehicle_summary.assign(
+            MARCA=vehicle_summary["MARCA"].replace("", "SIN MARCA"),
+            STATUS_DEL_VEHICULO=vehicle_summary["STATUS_DEL_VEHICULO"].replace("", "SIN ESTADO"),
+        )
+        .groupby(["MARCA", "STATUS_DEL_VEHICULO"], dropna=False)
+        .agg(VEHICULOS=("VEHICULO_ID", "count"))
+        .reset_index()
+        .rename(columns={"STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO"})
+        .sort_values(["MARCA", "VEHICULOS", "STATUS DEL VEHICULO"], ascending=[True, False, True])
+    )
+    return data
+
+
+def brand_status_matrix(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
+    detail = brand_status_summary(vehicle_summary)
+    if detail.empty:
+        return pd.DataFrame(columns=["MARCA"])
+    matrix = (
+        detail.pivot(index="MARCA", columns="STATUS DEL VEHICULO", values="VEHICULOS")
+        .fillna(0)
+        .astype(int)
+        .reset_index()
+    )
+    status_cols = [col for col in matrix.columns if col != "MARCA"]
+    matrix["TOTAL"] = matrix[status_cols].sum(axis=1)
+    matrix = matrix.sort_values(["TOTAL", "MARCA"], ascending=[False, True])
+    ordered_cols = ["MARCA", "TOTAL"] + [col for col in status_cols]
+    return matrix[ordered_cols]
 
 
 def top_vehicles_by_delay(vehicle_summary: pd.DataFrame) -> pd.DataFrame:
@@ -1197,6 +1255,7 @@ def dataframe_to_excel_bytes(
     delay_df: pd.DataFrame,
     report_meta: dict[str, object],
     chart_tables: list[dict[str, object]],
+    additional_sheets: list[dict[str, object]] | None = None,
 ) -> bytes:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1209,6 +1268,9 @@ def dataframe_to_excel_bytes(
         for chart_cfg in chart_tables:
             write_dataframe_sheet(writer, chart_cfg["df"], chart_cfg["sheet_name"], chart_cfg["accent_color"])
             chart_sheet_names[chart_cfg["key"]] = chart_cfg["sheet_name"]
+
+        for extra_sheet in additional_sheets or []:
+            write_dataframe_sheet(writer, extra_sheet["df"], extra_sheet["sheet_name"], extra_sheet["accent_color"])
 
         build_executive_sheet(
             writer.book,
@@ -1431,6 +1493,9 @@ provider_df = provider_summary(filtered_df)
 status_df = status_summary(filtered_vehicle_summary)
 semaforo_df = semaforo_summary(filtered_vehicle_summary)
 brand_df, brand_label = brand_or_model_summary(filtered_vehicle_summary)
+brand_delay_df = brand_delay_summary(filtered_vehicle_summary)
+brand_status_df = brand_status_summary(filtered_vehicle_summary)
+brand_status_matrix_df = brand_status_matrix(filtered_vehicle_summary)
 delay_top_df = top_vehicles_by_delay(filtered_vehicle_summary).head(15)
 
 tabs = st.tabs(
@@ -1653,6 +1718,19 @@ with tabs[2]:
         )
         st.dataframe(delay_display, use_container_width=True, hide_index=True)
 
+        summary_cols = st.columns(2)
+        with summary_cols[0]:
+            horizontal_bar(
+                brand_delay_df,
+                "MARCA",
+                "DIAS PROMEDIO",
+                "Demora promedio por marca",
+                "#0f172a",
+            )
+        with summary_cols[1]:
+            st.subheader("Estado de vehiculos por marca")
+            st.dataframe(brand_status_matrix_df, use_container_width=True, hide_index=True)
+
 vehicle_display = filtered_vehicle_summary.copy()
 vehicle_display["FECHA"] = vehicle_display["FECHA"].apply(format_date)
 vehicle_display["VENTA"] = vehicle_display["VENTA"].apply(format_date)
@@ -1711,6 +1789,7 @@ if is_particular_mode:
     summary_columns = [
         "FECHA",
         "CANAL",
+        "RESPONSABLE",
         "PROVEEDOR",
         "CHASIS",
         "KILOMETRAJE",
@@ -1773,6 +1852,7 @@ if is_particular_mode:
     repuestos_columns = [
         "FECHA",
         "CANAL",
+        "RESPONSABLE",
         "PROVEEDOR",
         "CHASIS",
         "KILOMETRAJE",
@@ -1799,6 +1879,7 @@ repuestos_export = repuestos_display[repuestos_columns].copy()
 
 if is_particular_mode:
     delay_export = no_stock_delay_df.copy()
+    additional_export_sheets: list[dict[str, object]] = []
     chart_tables = [
         {"key": "chart_1", "df": warranty_df, "sheet_name": "Garantia vehiculos", "accent_color": "0F766E"},
         {"key": "chart_2", "df": motivo_df, "sheet_name": "Motivos cliente", "accent_color": "1D4ED8"},
@@ -1852,11 +1933,15 @@ else:
             "STATUS_DEL_VEHICULO": "STATUS DEL VEHICULO",
         }
     ).copy()
+    additional_export_sheets = [
+        {"df": brand_df, "sheet_name": "Marca modelo", "accent_color": "0F172A"},
+        {"df": brand_status_matrix_df, "sheet_name": "Estado por marca", "accent_color": "1E293B"},
+    ]
     chart_tables = [
         {"key": "chart_1", "df": piece_result_df, "sheet_name": "Resultado piezas", "accent_color": "0F766E"},
         {"key": "chart_2", "df": status_df, "sheet_name": "Estados vehiculo", "accent_color": "1D4ED8"},
         {"key": "chart_3", "df": semaforo_df, "sheet_name": "Semaforo taller", "accent_color": "B45309"},
-        {"key": "chart_4", "df": brand_df, "sheet_name": "Marca modelo", "accent_color": "0F172A"},
+        {"key": "chart_4", "df": brand_delay_df, "sheet_name": "Demora marca", "accent_color": "0F172A"},
     ]
     report_meta = {
         "archivo": active_file_name,
@@ -1893,7 +1978,7 @@ else:
             {"key": "chart_1", "title": "Resultado de piezas", "anchor": "A24", "color": "0F766E"},
             {"key": "chart_2", "title": "Vehiculos por estado", "anchor": "G24", "color": "1D4ED8"},
             {"key": "chart_3", "title": "Semaforo de demora", "anchor": "A39", "color": "B45309"},
-            {"key": "chart_4", "title": f"Vehiculos por {brand_label.lower()}", "anchor": "G39", "color": "0F172A"},
+            {"key": "chart_4", "title": "Demora promedio por marca", "anchor": "G39", "color": "0F172A"},
         ],
     }
 
@@ -1904,6 +1989,7 @@ download_bytes = dataframe_to_excel_bytes(
     delay_export,
     report_meta,
     chart_tables,
+    additional_export_sheets,
 )
 
 with tabs[3]:
